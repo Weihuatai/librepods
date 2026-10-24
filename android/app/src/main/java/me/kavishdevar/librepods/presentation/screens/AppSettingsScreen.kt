@@ -91,6 +91,7 @@ import me.kavishdevar.librepods.presentation.components.StyledList
 import me.kavishdevar.librepods.presentation.components.StyledListItem
 import me.kavishdevar.librepods.presentation.components.StyledSlider
 import me.kavishdevar.librepods.presentation.components.StyledToggle
+import me.kavishdevar.librepods.presentation.components.PlaybackPriorityStatusCard
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.MaterialTypography
@@ -296,6 +297,7 @@ fun AppSettingsScreen(
                 checked = state.nonPreemptiveAudio,
                 onCheckedChange = viewModel::setNonPreemptiveAudio
             )
+            if (state.nonPreemptiveAudio) PlaybackPriorityStatusCard()
             StyledList(title = stringResource(R.string.takeover_airpods_state)) {
                 StyledToggle(
                     label = stringResource(R.string.takeover_disconnected),

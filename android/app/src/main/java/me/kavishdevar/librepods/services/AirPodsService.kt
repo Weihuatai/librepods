@@ -165,6 +165,49 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var priorityCallActive = false
     private var priorityPlaybackActive = false
     private val priorityRouteGate by lazy { PriorityAudioRouteGate(this) }
+    private val priorityAuditHandler = Handler(Looper.getMainLooper())
+    private val priorityAudit = object : Runnable {
+        override fun run() {
+            if (!priorityReady()) return
+            updatePriorityRoute()
+            // Verify the route independently of playback callbacks. This is not an idle grace period.
+            priorityAuditHandler.postDelayed(this, 1_000L)
+        }
+    }
+
+    private fun schedulePriorityAudit() {
+        priorityAuditHandler.removeCallbacks(priorityAudit)
+        if (isNonPreemptiveAudioEnabled()) priorityAuditHandler.post(priorityAudit)
+    }
+
+    internal fun priorityDiagnostics(): String {
+        val profiles = priorityRouteGate.snapshot()
+        val owner = when (playbackPriority.snapshot()) {
+            PlaybackPriorityPolicy.Owner.UNKNOWN -> R.string.priority_owner_unknown
+            PlaybackPriorityPolicy.Owner.IDLE -> R.string.priority_owner_idle
+            PlaybackPriorityPolicy.Owner.LOCAL -> R.string.priority_owner_local
+            PlaybackPriorityPolicy.Owner.REMOTE -> R.string.priority_owner_remote
+        }
+        fun route(profile: Int, label: String): String {
+            val status = profiles[profile] ?: return "$label: ${getString(R.string.priority_unchecked)}"
+            status.error?.let { return "$label: ${getString(R.string.priority_failed)}\n$it" }
+            val state = when (status.state) {
+                BluetoothProfile.STATE_DISCONNECTED -> R.string.priority_disconnected
+                BluetoothProfile.STATE_CONNECTED -> R.string.priority_connected
+                else -> R.string.priority_transition
+            }
+            val policy = if (status.policy == 0) R.string.priority_forbidden else R.string.priority_permitted
+            return "$label: ${getString(policy)}, ${getString(state)} (${status.policy}/${status.state})"
+        }
+        val control = BluetoothConnectionManager.aacpSocket?.isConnected == true
+        return listOf(
+            getString(owner),
+            getString(if (playbackPriority.allowsLocal()) R.string.priority_want_allow else R.string.priority_want_hold),
+            getString(if (control) R.string.priority_control_connected else R.string.priority_control_lost),
+            route(BluetoothProfile.A2DP, getString(R.string.priority_media)),
+            route(BluetoothProfile.HEADSET, getString(R.string.priority_calls))
+        ).joinToString("\n")
+    }
 
     fun isNonPreemptiveAudioEnabled(): Boolean =
         this::sharedPreferences.isInitialized && sharedPreferences.getBoolean("non_preemptive_audio", false)
@@ -202,7 +245,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun updatePriorityRoute() {
         if (!isNonPreemptiveAudioEnabled()) return
-        val target = device ?: return
+        val target = device ?: run {
+            if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) return
+            getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(macAddress) ?: return
+        }
         priorityRouteGate.update(target, playbackPriority.allowsLocal())
     }
 
@@ -661,6 +707,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
         macAddress = sharedPreferences.getString("mac_address", "") ?: ""
+        schedulePriorityAudit()
 
         telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         phoneStateListener = object: TelephonyCallback(), TelephonyCallback.CallStateListener {
@@ -762,9 +809,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    }
 
                 } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
-                    priorityRouteGate.restore()
-                    playbackPriority.reset()
-                    priorityWasEnabled = false
+                    // Closing audio profiles may also interrupt the control socket on some ROMs.
+                    // Do not silently undo the protection in response to that disconnection.
+                    if (!isNonPreemptiveAudioEnabled()) {
+                        priorityRouteGate.restore()
+                        playbackPriority.reset()
+                        priorityWasEnabled = false
+                    }
                     device = null
 //                    isConnectedLocally = false
                     popupShown = false
@@ -1560,6 +1611,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             "non_preemptive_audio" -> {
                 priorityReady()
                 updatePriorityRoute()
+                schedulePriorityAudit()
             }
 
             "name" -> config.deviceName = preferences.getString(key, "AirPods") ?: "AirPods"
@@ -3221,6 +3273,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        priorityAuditHandler.removeCallbacks(priorityAudit)
+        ServiceManager.setService(null)
         priorityRouteGate.restore()
         playbackPriority.reset()
 

@@ -164,6 +164,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var priorityWasEnabled = false
     private var priorityCallActive = false
     private var priorityPlaybackActive = false
+    private val controlSessions = ControlSessionEpoch()
+    private val controlConnecting = java.util.concurrent.atomic.AtomicBoolean(false)
     private val priorityRouteGate by lazy { PriorityAudioRouteGate(this) }
     private val priorityAuditHandler = Handler(Looper.getMainLooper())
     private val priorityAudit = object : Runnable {
@@ -200,17 +202,32 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             return "$label: ${getString(policy)}, ${getString(state)} (${status.policy}/${status.state})"
         }
         val control = BluetoothConnectionManager.aacpSocket?.isConnected == true
+        val session = controlSessions.snapshot()
+        val controlStatus = when {
+            !control -> R.string.priority_control_lost
+            session.active && session.replies > 0 -> R.string.priority_control_verified
+            else -> R.string.priority_control_pending
+        }
         return listOf(
+            getString(when {
+                isNonPreemptiveAudioEnabled() -> R.string.priority_mode_on
+                isNonPreemptiveAudioRequested() -> R.string.priority_mode_unavailable
+                else -> R.string.priority_mode_off
+            }),
             getString(owner),
             getString(if (playbackPriority.allowsLocal()) R.string.priority_want_allow else R.string.priority_want_hold),
-            getString(if (control) R.string.priority_control_connected else R.string.priority_control_lost),
+            getString(controlStatus),
             route(BluetoothProfile.A2DP, getString(R.string.priority_media)),
             route(BluetoothProfile.HEADSET, getString(R.string.priority_calls))
         ).joinToString("\n")
     }
 
-    fun isNonPreemptiveAudioEnabled(): Boolean =
+    private fun isNonPreemptiveAudioRequested(): Boolean =
         this::sharedPreferences.isInitialized && sharedPreferences.getBoolean("non_preemptive_audio", false)
+
+    fun isNonPreemptiveAudioEnabled(): Boolean =
+        isNonPreemptiveAudioRequested() &&
+            checkSelfPermission("android.permission.BLUETOOTH_PRIVILEGED") == PackageManager.PERMISSION_GRANTED
 
     private fun priorityReady(): Boolean {
         val enabled = isNonPreemptiveAudioEnabled()
@@ -809,6 +826,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    }
 
                 } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
+                    if (intent.hasExtra("control_session") &&
+                        !controlSessions.isLatest(intent.getLongExtra("control_session", -1L))) return
+                    controlSessions.invalidate()
                     // Closing audio profiles may also interrupt the control socket on some ROMs.
                     // Do not silently undo the protection in response to that disconnection.
                     if (!isNonPreemptiveAudioEnabled()) {
@@ -2787,45 +2807,50 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
     ) {
+        // Duplicate broadcasts should not start parallel handshakes or block the receiver thread.
+        if (!controlConnecting.compareAndSet(false, true)) return
+        try {
+            connectControlSocket(adapter, device, manual)
+        } finally {
+            controlConnecting.set(false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectControlSocket(adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean) {
         if (BluetoothConnectionManager.aacpSocket != null && BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+        val sessionId = controlSessions.begin()
+        val previousAuxiliary = BluetoothConnectionManager.attSocket
+        BluetoothConnectionManager.attSocket = null
+        runCatching { previousAuxiliary?.close() }
         Log.d(TAG, "<LogCollector:Start> Connecting to socket")
         val uuid: ParcelUuid = ParcelUuid.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
 //        if (!isConnectedLocally) {
         val socket = try {
             createBluetoothSocket(adapter, device, uuid, 4097)
         } catch (e: Exception) {
+            controlSessions.finish(sessionId)
             Log.e(TAG, "Failed to create BluetoothSocket: ${e.message}")
             showSocketConnectionFailureNotification("Failed to create Bluetooth socket: ${e.localizedMessage}")
             return
         }
 
+        fun currentSession() = controlSessions.isCurrent(sessionId) && BluetoothConnectionManager.aacpSocket === socket
+        fun sendForSession(action: () -> Unit) = controlSessions.runIfCurrent(sessionId) {
+            if (BluetoothConnectionManager.aacpSocket === socket) action()
+        }
         try {
             runBlocking {
                 withTimeout(5000.milliseconds) {
                     try {
                         socket.connect()
-                        this@AirPodsService.device = device
-                        val xposedRemotePref = XposedRemotePrefProvider.create()
-                        val attSocket = if (xposedRemotePref.getBoolean("vendor_id_hook", false) && !isNonPreemptiveAudioEnabled()) {
-                            createBluetoothSocket(
-                                adapter,
-                                device,
-                                ParcelUuid.fromString("00000000-0000-0000-0000-000000000000"),
-                                31
-                            )
-                        } else null
-                        attSocket?.connect()
-
-                        if (attSocket != null) {
-                            attManager.startReader()
-                            attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
-                            attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
-                            attManager.readCharacteristic(ATTHandles.HEARING_AID)
+                        if (!controlSessions.runIfCurrent(sessionId) {
+                            BluetoothConnectionManager.aacpSocket = socket
+                            this@AirPodsService.device = device
+                        }) {
+                            socket.close()
+                            return@withTimeout
                         }
-
-                        BluetoothConnectionManager.aacpSocket = socket
-                        BluetoothConnectionManager.attSocket = attSocket
-
                         // Create AirPodsInstance from stored config if available
                         if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
                             val model =
@@ -2877,7 +2902,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     }
                 }
             }
-            if (!socket.isConnected) {
+            if (!socket.isConnected || !currentSession()) {
+                controlSessions.finish(sessionId)
+                runCatching { socket.close() }
                 Log.d(TAG, "<LogCollector:Complete:Failed> socket not connected")
                 if (manual) {
                     sendToast(
@@ -2889,31 +2916,69 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 return
             }
             this@AirPodsService.device = device
-            BluetoothConnectionManager.aacpSocket?.let {
-                aacpManager.sendPacket(aacpManager.createHandshakePacket())
-                aacpManager.sendSetFeatureFlagsPacket()
-                aacpManager.sendNotificationRequest()
-                Log.d(TAG, "Requesting proximity keys")
-                aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
-                CoroutineScope(Dispatchers.IO).launch {
-                    delay(200)
+            socket.let {
+                if (!sendForSession {
                     aacpManager.sendPacket(aacpManager.createHandshakePacket())
-                    delay(200)
                     aacpManager.sendSetFeatureFlagsPacket()
-                    delay(200)
                     aacpManager.sendNotificationRequest()
-                    delay(200)
-                    aacpManager.sendSomePacketIDontKnowWhatItIs()
-                    delay(200)
                     aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
-                    if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        aacpManager.sendPacket(aacpManager.createHandshakePacket())
-                        aacpManager.sendSetFeatureFlagsPacket()
-                        aacpManager.sendNotificationRequest()
-                        aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
-                        if (!handleIncomingCallOnceConnected) stopHeadTracking()
-                    }, 5000)
+                }) return@let
+                CoroutineScope(Dispatchers.IO).launch {
+                    // Read immediately; retries and optional ATT setup cannot delay the reader.
+                    launch initialization@ {
+                        delay(200)
+                        if (!sendForSession { aacpManager.sendPacket(aacpManager.createHandshakePacket()) }) return@initialization
+                        delay(200)
+                        if (!sendForSession { aacpManager.sendSetFeatureFlagsPacket() }) return@initialization
+                        delay(200)
+                        if (!sendForSession { aacpManager.sendNotificationRequest() }) return@initialization
+                        delay(200)
+                        if (!sendForSession { aacpManager.sendSomePacketIDontKnowWhatItIs() }) return@initialization
+                        delay(200)
+                        if (!sendForSession {
+                            aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
+                            if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
+                        }) return@initialization
+                        delay(5000)
+                        sendForSession {
+                            aacpManager.sendPacket(aacpManager.createHandshakePacket())
+                            aacpManager.sendSetFeatureFlagsPacket()
+                            aacpManager.sendNotificationRequest()
+                            aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
+                            if (!handleIncomingCallOnceConnected) stopHeadTracking()
+                        }
+                    }
+                    launch auxiliary@ {
+                        if (!currentSession()) return@auxiliary
+                        val xposedRemotePref = XposedRemotePrefProvider.create()
+                        // An optional auxiliary channel must not abort the primary control session.
+                        val attSocket = if (xposedRemotePref.getBoolean("vendor_id_hook", false) && !isNonPreemptiveAudioRequested()) {
+                            var candidate: BluetoothSocket? = null
+                            try {
+                                candidate = createBluetoothSocket(adapter, device,
+                                    ParcelUuid.fromString("00000000-0000-0000-0000-000000000000"), 31)
+                                candidate.connect()
+                                candidate
+                            } catch (error: Exception) {
+                                runCatching { candidate?.close() }
+                                Log.w(TAG, "Optional ATT connection unavailable", error)
+                                null
+                            }
+                        } else null
+                        if (!controlSessions.runIfCurrent(sessionId) {
+                            BluetoothConnectionManager.attSocket = attSocket
+                            if (attSocket != null) {
+                                attManager.startReader()
+                                attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
+                                attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
+                                attManager.readCharacteristic(ATTHandles.HEARING_AID)
+                            }
+                        }) {
+                            runCatching { attSocket?.close() }
+                        }
+
+                    }
+                    if (!currentSession()) return@launch
 
                     sendBroadcast(
                         Intent(AirPodsNotifications.AIRPODS_CONNECTED).putExtra("device", device)
@@ -2921,14 +2986,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                 setPackage(packageName)
                             })
 
-                    setupStemActions()
+                    sendForSession { setupStemActions() }
 
-                    while (socket.isConnected) {
+                    while (socket.isConnected && currentSession()) {
                         try {
                             val buffer = ByteArray(1024)
                             val bytesRead = it.inputStream.read(buffer)
+                            if (!currentSession()) return@launch
                             var data: ByteArray
                             if (bytesRead > 0) {
+                                controlSessions.reply(sessionId)
                                 data = buffer.copyOfRange(0, bytesRead)
                                 sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DATA).apply {
                                     putExtra("data", buffer.copyOfRange(0, bytesRead))
@@ -2943,7 +3010,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                     batteryNotification.getBattery()
                                 )
 
-                                aacpManager.receivePacket(data)
+                                sendForSession { aacpManager.receivePacket(data) }
 
                                 if (!isHeadTrackingData(data)) {
                                     Log.d("AirPodsData", "Data received: $formattedHex")
@@ -2952,30 +3019,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
                             } else if (bytesRead == -1) {
                                 Log.d("AirPodsService", "socket closed (bytesRead = -1)")
-                                sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                                    setPackage(packageName)
-                                })
-                                aacpManager.disconnected()
+                                finishControlSession(sessionId, socket)
                                 return@launch
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error reading data, we have probably disconnected.")
                             e.printStackTrace()
-                            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                                setPackage(packageName)
-                            })
-                            aacpManager.disconnected()
+                            finishControlSession(sessionId, socket)
                             return@launch
                         }
 
                     }
                     Log.d("AirPods Service", "socket closed")
 //                        isConnectedLocally = false
-                    aacpManager.disconnected()
-                    updateNotificationContent(false)
-                    sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                        setPackage(packageName)
-                    })
+                    finishControlSession(sessionId, socket)
                 }
             }
         } catch (e: Exception) {
@@ -2983,12 +3040,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d(TAG, "Failed to connect to BluetoothConnectionManager.aacpSocket?: ${e.message}")
             showSocketConnectionFailureNotification("Failed to establish connection: ${e.localizedMessage}")
 //                isConnectedLocally = false
-            this@AirPodsService.device = device
-            updateNotificationContent(false)
+            finishControlSession(sessionId, socket)
         }
 //        } else {
 //            Log.d(TAG, "Already connected locally, skipping BluetoothConnectionManager.aacpSocket? connection (isConnectedLocally = $isConnectedLocally, BluetoothConnectionManager.aacpSocket?.isConnected = ${this::BluetoothConnectionManager.aacpSocket?.isInitialized && BluetoothConnectionManager.aacpSocket?.isConnected})")
 //        }
+    }
+
+    private fun finishControlSession(sessionId: Long, socket: BluetoothSocket) {
+        val wasCurrent = controlSessions.finish(sessionId)
+        runCatching { socket.close() }
+        if (!wasCurrent) return
+        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
+            putExtra("control_session", sessionId)
+            setPackage(packageName)
+        })
     }
 
     fun disconnectForCD() {
@@ -3023,6 +3089,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun disconnectAirPods() {
+        val disconnectedSession = controlSessions.invalidate()
         if (BluetoothConnectionManager.aacpSocket == null) return
         try {
             BluetoothConnectionManager.aacpSocket?.close()
@@ -3033,10 +3100,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         aacpManager.disconnected()
 
         BluetoothConnectionManager.aacpSocket = null
+        runCatching { BluetoothConnectionManager.attSocket?.close() }
         BluetoothConnectionManager.attSocket = null
 
         updateNotificationContent(false)
         sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
+            putExtra("control_session", disconnectedSession)
             setPackage(packageName)
         })
 
@@ -3273,6 +3342,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        controlSessions.invalidate()
+        runCatching { BluetoothConnectionManager.aacpSocket?.close() }
+        runCatching { BluetoothConnectionManager.attSocket?.close() }
+        BluetoothConnectionManager.aacpSocket = null
+        BluetoothConnectionManager.attSocket = null
         priorityAuditHandler.removeCallbacks(priorityAudit)
         ServiceManager.setService(null)
         priorityRouteGate.restore()

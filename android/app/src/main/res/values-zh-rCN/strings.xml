@@ -305,4 +305,12 @@
     <string name="priority_forbidden">策略已禁止</string>
     <string name="priority_permitted">策略允许连接</string>
     <string name="priority_status_hint">Mac 播放时，媒体音频应显示“策略已禁止，已断开”。仍抢占时点“复制状态”即可反馈，无需收集日志。每秒刷新检查，不增加停播等待。</string>
+    <string name="priority_mode_on">防抢占实验开关：开启</string>
+    <string name="priority_mode_off">防抢占实验开关：关闭（未执行通道保护）</string>
+    <string name="priority_control_verified">耳机控制连接：已收到本次连接的耳机数据</string>
+    <string name="priority_control_pending">耳机控制连接：通道已连接，尚未确认收到耳机数据</string>
+    <string name="priority_root_check">检查系统挂载（需 root）</string>
+    <string name="priority_root_check_running">正在检查系统挂载…</string>
+    <string name="priority_root_check_timeout">检查超时，请确认已允许 root 授权后重试。</string>
+    <string name="priority_mode_unavailable">防抢占未运行：缺少系统蓝牙权限；保留普通连接与耳机控制。</string>
 </resources>

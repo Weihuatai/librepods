@@ -18,21 +18,29 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.services.ServiceManager
+import me.kavishdevar.librepods.utils.RootEnvironmentCheck
 
 /** Small, copyable status instead of asking the user to collect system logs. */
 @Composable
 fun PlaybackPriorityStatusCard() {
     val context = LocalContext.current
     var report by remember { mutableStateOf("") }
+    var environment by remember { mutableStateOf("") }
+    var checking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(context) {
         while (true) {
             fun permission(name: String) = context.getString(
@@ -46,6 +54,8 @@ fun PlaybackPriorityStatusCard() {
                 context.getString(if (systemApp) R.string.priority_system_app else R.string.priority_user_app),
                 "BLUETOOTH_PRIVILEGED: ${permission("BLUETOOTH_PRIVILEGED")}",
                 "MODIFY_PHONE_STATE: ${permission("MODIFY_PHONE_STATE")}",
+                "APP_VIEW_APK=${java.io.File("/system/priv-app/LibrePods/LibrePods.apk").isFile}",
+                "APP_VIEW_PERMISSIONS=${java.io.File("/system/etc/permissions/privapp-permissions-librepods.xml").isFile}",
                 ServiceManager.getService()?.priorityDiagnostics()
                     ?: context.getString(R.string.priority_service_missing)
             ).joinToString("\n")
@@ -59,9 +69,22 @@ fun PlaybackPriorityStatusCard() {
         Text(report, modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
         Text(stringResource(R.string.priority_status_hint), modifier = Modifier.padding(top = 8.dp),
             style = MaterialTheme.typography.bodySmall)
+        TextButton(enabled = !checking, onClick = {
+            checking = true
+            scope.launch {
+                try {
+                    environment = withContext(Dispatchers.IO) { RootEnvironmentCheck.run(context) }
+                } finally {
+                    checking = false
+                }
+            }
+        }) { Text(stringResource(if (checking) R.string.priority_root_check_running else R.string.priority_root_check)) }
+        if (environment.isNotBlank()) {
+            Text(environment, style = MaterialTheme.typography.bodySmall)
+        }
         TextButton(onClick = {
             context.getSystemService(ClipboardManager::class.java)
-                .setPrimaryClip(ClipData.newPlainText("LibrePods playback protection", report))
+                .setPrimaryClip(ClipData.newPlainText("LibrePods playback protection", listOf(report, environment).filter { it.isNotBlank() }.joinToString("\n\n")))
         }) { Text(stringResource(R.string.priority_copy_status)) }
     }
 }

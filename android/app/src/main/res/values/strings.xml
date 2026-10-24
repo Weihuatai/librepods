@@ -316,4 +316,12 @@
     <string name="priority_forbidden">Policy blocked</string>
     <string name="priority_permitted">Policy allows connection</string>
     <string name="priority_status_hint">While the Mac is playing, media audio must show blocked and disconnected. Copy this status if switching still interrupts playback. This page refreshes every second without delaying idle release.</string>
+    <string name="priority_mode_on">Playback protection: on</string>
+    <string name="priority_mode_off">Playback protection: off (profile protection is inactive)</string>
+    <string name="priority_control_verified">Earbud control: data received from this connection</string>
+    <string name="priority_control_pending">Earbud control: socket connected; no earbud data confirmed yet</string>
+    <string name="priority_root_check">Check system mount (root)</string>
+    <string name="priority_root_check_running">Checking system mount…</string>
+    <string name="priority_root_check_timeout">Root check timed out. Check whether root access was allowed, then retry.</string>
+    <string name="priority_mode_unavailable">Playback protection requested but inactive: privileged Bluetooth permission missing. Normal controls remain enabled.</string>
 </resources>

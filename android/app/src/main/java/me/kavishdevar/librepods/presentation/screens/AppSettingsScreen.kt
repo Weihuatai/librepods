@@ -290,27 +290,33 @@ fun AppSettingsScreen(
                 )
             }
 
+            StyledToggle(
+                label = stringResource(R.string.non_preemptive_audio),
+                description = stringResource(R.string.non_preemptive_audio_description),
+                checked = state.nonPreemptiveAudio,
+                onCheckedChange = viewModel::setNonPreemptiveAudio
+            )
             StyledList(title = stringResource(R.string.takeover_airpods_state)) {
                 StyledToggle(
                     label = stringResource(R.string.takeover_disconnected),
                     description = stringResource(R.string.takeover_disconnected_desc),
                     checked = state.takeoverWhenDisconnected,
                     onCheckedChange = viewModel::setTakeoverWhenDisconnected,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
                 StyledToggle(
                     label = stringResource(R.string.takeover_idle),
                     description = stringResource(R.string.takeover_idle_desc),
                     checked = state.takeoverWhenIdle,
                     onCheckedChange = viewModel::setTakeoverWhenIdle,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
                 StyledToggle(
                     label = stringResource(R.string.takeover_music),
                     description = stringResource(R.string.takeover_music_desc),
                     checked = state.takeoverWhenMusic,
                     onCheckedChange = viewModel::setTakeoverWhenMusic,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
 
                 StyledToggle(
@@ -318,7 +324,7 @@ fun AppSettingsScreen(
                     description = stringResource(R.string.takeover_call_desc),
                     checked = state.takeoverWhenCall,
                     onCheckedChange = viewModel::setTakeoverWhenCall,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
             }
 
@@ -330,14 +336,14 @@ fun AppSettingsScreen(
                     description = stringResource(R.string.takeover_ringing_call_desc),
                     checked = state.takeoverWhenRingingCall,
                     onCheckedChange = viewModel::setTakeoverWhenRingingCall,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
                 StyledToggle(
                     label = stringResource(R.string.takeover_media_start),
                     description = stringResource(R.string.takeover_media_start_desc),
                     checked = state.takeoverWhenMediaStart,
                     onCheckedChange = viewModel::setTakeoverWhenMediaStart,
-                    enabled = state.isPremium
+                    enabled = state.isPremium && !state.nonPreemptiveAudio
                 )
             }
 

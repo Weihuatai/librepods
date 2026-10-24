@@ -239,6 +239,7 @@ class AACPManager {
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
         fun onAudioSourceReceived(audioSource: ByteArray)
+        fun onRemotePlaybackState(sender: String, active: Boolean) {}
         fun onOwnershipChangeReceived(owns: Boolean)
         fun onConnectedDevicesReceived(connectedDevices: List<ConnectedDevice>)
         fun onOwnershipToFalseRequest(sender: String, reasonReverseTapped: Boolean)
@@ -547,6 +548,12 @@ class AACPManager {
                     TAG,
                     "Smart Routing Response from $sender: $packetString, type: ${connectedDevices.find { it.mac == sender }?.type}"
                 )
+                // Only an explicit streaming field is evidence of remote idle/playback.
+                // An absent field, app title, or unrelated UI packet must not release the owner.
+                Regex("hostStreamingState[A-Z]?(YES|NO)", RegexOption.IGNORE_CASE)
+                    .find(packetString)?.groupValues?.getOrNull(1)?.let { value ->
+                        callback?.onRemotePlaybackState(sender, value.equals("YES", ignoreCase = true))
+                    }
                 if (packetString.contains("SetOwnershipToFalse")) {
                     callback?.onOwnershipToFalseRequest(
                         sender,

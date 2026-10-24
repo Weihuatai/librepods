@@ -2,6 +2,7 @@ import java.util.Properties
 
 val appVersionName = rootProject.extra["appVersionName"] as String
 val appVersionCode = rootProject.extra["appVersionCode"] as Int
+val testNativeLibrariesDir = providers.gradleProperty("testNativeLibrariesDir").orNull
 
 plugins {
     alias(libs.plugins.android.application)
@@ -35,6 +36,11 @@ kotlin {
 
 android {
     signingConfigs {
+        if (testNativeLibrariesDir != null) {
+            getByName("debug") {
+                storeFile = rootProject.layout.buildDirectory.file("test-signing/debug.keystore").get().asFile
+            }
+        }
         if (releaseSigningAvailable) {
             create("release") {
                 storeFile = file(props["RELEASE_STORE_FILE"] as String)
@@ -60,10 +66,8 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             )
-            externalNativeBuild {
-                cmake {
-                    arguments += "-DCMAKE_BUILD_TYPE=Release"
-                }
+            if (testNativeLibrariesDir == null) {
+                externalNativeBuild { cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" } }
             }
             if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
@@ -76,7 +80,7 @@ android {
             if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            versionNameSuffix = "-debug"
+            versionNameSuffix = "-no-preempt-test2"
             defaultConfig {
                 minSdk = 33
             }
@@ -106,15 +110,13 @@ android {
     androidResources {
         generateLocaleConfig = true
     }
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
+    if (testNativeLibrariesDir == null) {
+        externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     }
     sourceSets {
         getByName("main") {
             res.directories += "src/main/res-apple"
+            testNativeLibrariesDir?.let { jniLibs.srcDir(it) }
         }
     }
 
@@ -159,6 +161,7 @@ dependencies {
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(libs.androidx.navigationevent)
+    testImplementation("junit:junit:4.13.2")
 }
 
 aboutLibraries {

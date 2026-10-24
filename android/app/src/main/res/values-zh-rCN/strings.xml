@@ -278,4 +278,6 @@
     <string name="permissions">权限</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="i_agree">我同意</string>
+    <string name="non_preemptive_audio">不抢占播放（实验）</string>
+    <string name="non_preemptive_audio_description">先播放的设备保持音频；确认两台设备均已停播后即可切换，不额外等待。开启后覆盖下方自动连接偏好。需安装配套 root 模块以同时阻止安卓媒体路由。另一台正在播放时，手动切换也会被阻止。耳机固件的实际行为仍需测试。</string>
 </resources>

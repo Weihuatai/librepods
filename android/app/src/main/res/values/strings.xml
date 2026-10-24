@@ -289,4 +289,6 @@
     <string name="eq_low">Low</string>
     <string name="eq_mid">Mid</string>
     <string name="eq_high">High</string>
+    <string name="non_preemptive_audio">Do not interrupt playback (experimental)</string>
+    <string name="non_preemptive_audio_description">The first playing device keeps the audio. Switch as soon as both devices are confirmed idle, without an extra delay. Overrides the automatic connection preferences below. Install the companion root module to also block Android media routing. Explicit manual switching is blocked while the other device is playing. Test with your earbud firmware.</string>
 </resources>

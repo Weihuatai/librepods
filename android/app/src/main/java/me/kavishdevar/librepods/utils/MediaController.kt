@@ -102,6 +102,15 @@ object MediaController {
             super.onPlaybackConfigChanged(configs)
             val now = SystemClock.uptimeMillis()
             val isActive = audioManager.isMusicActive
+            // Query every active playback stream, including notification/UI/alarm
+            // sounds, rather than relying on music-only state or hidden APIs.
+            val anyAudioActive = isActive || audioManager.activePlaybackConfigurations.isNotEmpty()
+            if (ServiceManager.getService()?.onPriorityLocalPlayback(anyAudioActive) == false) {
+                lastKnownIsMusicActive = false
+                lastPlaybackCallbackAt = now
+                return
+            }
+
             Log.d("MediaController", "Playback config changed, iPausedTheMedia: $iPausedTheMedia, isActive: $isActive, pausedForOtherDevice: $pausedForOtherDevice, lastKnownIsMusicActive: $lastKnownIsMusicActive")
 
             if (!isActive && lastPlayWithReplay && now - lastPlayTime < 2500L) {
@@ -278,6 +287,10 @@ object MediaController {
 
     @Synchronized
     fun sendPlay(replayWhenPaused: Boolean = false, force: Boolean = false) {
+        if (ServiceManager.getService()?.priorityAllowsLocalAudio() == false) {
+            Log.i("PlaybackPriority", "Blocked delayed/ear-detection auto-play while remote owner is protected")
+            return
+        }
         Log.d("MediaController", "Sending play with iPausedTheMedia: $iPausedTheMedia, replayWhenPaused: $replayWhenPaused, force: $force")
         if (replayWhenPaused) {
             lastPlayWithReplay = true

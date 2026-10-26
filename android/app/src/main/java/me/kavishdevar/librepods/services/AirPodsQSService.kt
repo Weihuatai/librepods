@@ -78,16 +78,6 @@ class AirPodsQSService : TileService() {
         }
     }
 
-    private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "off_listening_mode") {
-            Log.d("AirPodsQSService", "Preference changed: $key")
-            if (currentAncMode == NoiseControlMode.OFF.ordinal + 1 && !isOffModeEnabled()) {
-                currentAncMode = NoiseControlMode.TRANSPARENCY.ordinal + 1
-            }
-            updateTile()
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
@@ -101,10 +91,6 @@ class AirPodsQSService : TileService() {
         val service = ServiceManager.getService()
         isAirPodsConnected = BluetoothConnectionManager.aacpSocket?.isConnected == true
         currentAncMode = service?.getANC() ?: (NoiseControlMode.OFF.ordinal + 1)
-
-        if (currentAncMode == NoiseControlMode.OFF.ordinal + 1 && !isOffModeEnabled()) {
-             currentAncMode = NoiseControlMode.TRANSPARENCY.ordinal + 1
-        }
 
         val ancIntentFilter = IntentFilter(AirPodsNotifications.ANC_DATA)
         val availabilityIntentFilter = IntentFilter().apply {
@@ -120,7 +106,6 @@ class AirPodsQSService : TileService() {
                 registerReceiver(ancStatusReceiver, ancIntentFilter)
                 registerReceiver(availabilityReceiver, availabilityIntentFilter)
             }
-            sharedPreferences.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
             Log.d("AirPodsQSService", "Receivers registered")
         } catch (e: Exception) {
             Log.e("AirPodsQSService", "Error registering receivers: $e")
@@ -135,7 +120,6 @@ class AirPodsQSService : TileService() {
         try {
             unregisterReceiver(ancStatusReceiver)
             unregisterReceiver(availabilityReceiver)
-            sharedPreferences.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
             Log.d("AirPodsQSService", "Receivers unregistered")
         } catch (e: IllegalArgumentException) {
             Log.e("AirPodsQSService", "Receiver not registered or already unregistered: $e")
@@ -193,7 +177,9 @@ class AirPodsQSService : TileService() {
             Log.d("AirPodsQSService", "Tile clicked (cycle mode) but service is null.")
             return
         }
-        val nextMode = getNextAncMode()
+        // Use the service's latest earbud report, even if this tile missed a broadcast.
+        currentAncMode = service.getANC()
+        val nextMode = QuickSettingsAncCycle.next(currentAncMode)
         Log.d("AirPodsQSService", "Cycling ANC mode to: $nextMode")
         service.aacpManager.sendControlCommand(
             AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
@@ -225,31 +211,6 @@ class AirPodsQSService : TileService() {
         } catch (e: Exception) {
             Log.e("AirPodsQSService", "Error updating tile: $e")
         }
-    }
-
-    private fun isOffModeEnabled(): Boolean {
-        return sharedPreferences.getBoolean("off_listening_mode", true)
-    }
-
-    private fun getAvailableModes(): List<Int> {
-        val modes = mutableListOf(
-            NoiseControlMode.TRANSPARENCY.ordinal + 1,
-            NoiseControlMode.ADAPTIVE.ordinal + 1,
-            NoiseControlMode.NOISE_CANCELLATION.ordinal + 1
-        )
-        if (isOffModeEnabled()) {
-            modes.add(0, NoiseControlMode.OFF.ordinal + 1)
-        }
-        return modes
-    }
-
-    private fun getNextAncMode(): Int {
-        val availableModes = getAvailableModes()
-        Log.d("AirPodsQSService", "availableModes: $availableModes, currentAncMode: $currentAncMode")
-        val currentIndex = availableModes.indexOf(currentAncMode)
-        val nextIndex = (currentIndex + 1) % availableModes.size
-        Log.d("AirPodsQSService", "nextIndex: $nextIndex")
-        return availableModes[nextIndex]
     }
 
     private fun getModeLabel(mode: Int): String {

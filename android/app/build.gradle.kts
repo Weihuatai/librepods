@@ -80,7 +80,7 @@ android {
             if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            versionNameSuffix = "-connection-fixes-test7"
+            versionNameSuffix = "-qs-cycle-test8"
             defaultConfig {
                 minSdk = 33
             }

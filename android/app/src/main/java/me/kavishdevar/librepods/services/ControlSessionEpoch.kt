@@ -1,39 +1,34 @@
 package me.kavishdevar.librepods.services
 
+import java.util.concurrent.atomic.AtomicReference
+
 /** Reject work and replies from an earlier connection, including queued disconnect events. */
 internal class ControlSessionEpoch {
     data class Snapshot(val generation: Long, val active: Boolean, val replies: Int)
-    private var generation = 0L
-    private var active = false
-    private var replies = 0
-    @Synchronized fun begin(): Long {
-        generation++
-        active = true
-        replies = 0
-        return generation
+    private val state = AtomicReference(Snapshot(0L, false, 0))
+    private val actions = Any()
+
+    // begin/runIfCurrent are for the IO lane. Reading or invalidating a session
+    // must never wait for protocol callbacks, Bluetooth writes or another monitor.
+    fun begin(): Long = synchronized(actions) {
+        state.updateAndGet { Snapshot(it.generation + 1, true, 0) }.generation
     }
-    @Synchronized fun invalidate(): Long {
-        generation++
-        active = false
-        replies = 0
-        return generation
+    fun invalidate(): Long = state.updateAndGet { Snapshot(it.generation + 1, false, 0) }.generation
+    fun isCurrent(token: Long): Boolean = state.get().let { it.generation == token && it.active }
+    fun isLatest(token: Long): Boolean = state.get().generation == token
+    fun reply(token: Long): Boolean = update(token) { it.copy(replies = it.replies + 1) }
+    fun finish(token: Long): Boolean = update(token) { it.copy(active = false) }
+    private fun update(token: Long, change: (Snapshot) -> Snapshot): Boolean {
+        while (true) {
+            val before = state.get()
+            if (before.generation != token || !before.active) return false
+            if (state.compareAndSet(before, change(before))) return true
+        }
     }
-    @Synchronized fun isCurrent(token: Long): Boolean = token == generation && active
-    @Synchronized fun isLatest(token: Long): Boolean = token == generation
-    @Synchronized fun reply(token: Long): Boolean {
-        if (!isCurrent(token)) return false
-        replies++
-        return true
-    }
-    @Synchronized fun finish(token: Long): Boolean {
-        if (!isCurrent(token)) return false
-        active = false
-        return true
-    }
-    @Synchronized fun runIfCurrent(token: Long, action: () -> Unit): Boolean {
+    fun runIfCurrent(token: Long, action: () -> Unit): Boolean = synchronized(actions) {
         if (!isCurrent(token)) return false
         action()
         return true
     }
-    @Synchronized fun snapshot() = Snapshot(generation, active, replies)
+    fun snapshot(): Snapshot = state.get()
 }

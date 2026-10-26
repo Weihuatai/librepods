@@ -280,10 +280,24 @@ class AACPManager {
         controlCommandListeners[identifier]?.remove(callback)
     }
 
-    private var callback: PacketCallback? = null
+    private data class SessionSocket(val socket: android.bluetooth.BluetoothSocket, val current: () -> Boolean)
+    private val sessionSocket = ThreadLocal<SessionSocket?>()
+    private var packetCallback: PacketCallback? = null
+    private val callback: PacketCallback?
+        get() = packetCallback.takeIf { sessionSocket.get()?.current?.invoke() != false }
+
+    // Bind protocol work to the socket captured by that session. Invalidating a
+    // session can then be non-blocking without redirecting an old write to a new earbud connection.
+    fun withSessionSocket(socket: android.bluetooth.BluetoothSocket, current: () -> Boolean, action: () -> Unit) {
+        val previous = sessionSocket.get()
+        sessionSocket.set(SessionSocket(socket, current))
+        try { if (current()) action() } finally {
+            if (previous == null) sessionSocket.remove() else sessionSocket.set(previous)
+        }
+    }
 
     fun setPacketCallback(callback: PacketCallback) {
-        this.callback = callback
+        packetCallback = callback
     }
 
     fun createDataPacket(data: ByteArray): ByteArray {
@@ -400,6 +414,7 @@ class AACPManager {
 
     @OptIn(ExperimentalStdlibApi::class)
     fun receivePacket(packet: ByteArray) {
+        if (sessionSocket.get()?.current?.invoke() == false) return
         if (!packet.toHexString().startsWith("04000400")) {
             Log.w(
                 TAG, "Received packet does not start with expected header: ${
@@ -1170,7 +1185,9 @@ class AACPManager {
                 )
             }
 
-            val socket = BluetoothConnectionManager.aacpSocket ?: return false
+            val bound = sessionSocket.get()
+            if (bound?.current?.invoke() == false) return false
+            val socket = bound?.socket ?: BluetoothConnectionManager.aacpSocket ?: return false
 
             if (socket.isConnected) {
                 socket.outputStream?.write(packet)

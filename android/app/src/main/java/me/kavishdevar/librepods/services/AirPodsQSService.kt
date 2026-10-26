@@ -187,10 +187,7 @@ class AirPodsQSService : TileService() {
         currentAncMode = service.getANC()
         val nextMode = QuickSettingsAncCycle.next(currentAncMode)
         Log.d("AirPodsQSService", "Cycling ANC mode to: $nextMode")
-        service.aacpManager.sendControlCommand(
-            AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
-            nextMode
-        )
+        service.requestNoiseControlMode(nextMode)
     }
 
     private fun updateTile() {

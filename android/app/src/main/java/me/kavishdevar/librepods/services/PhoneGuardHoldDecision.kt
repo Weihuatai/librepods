@@ -4,8 +4,9 @@ package me.kavishdevar.librepods.services
 internal object PhoneGuardHoldDecision {
     enum class Action { HOLD, WAIT, RESTORE }
     fun decide(enabled: Boolean, aclConnected: Boolean?, controlConfirmed: Boolean,
-               remoteIdle: Boolean, leaseOwned: Boolean, mediaReady: Boolean): Action = when {
-        !enabled || aclConnected == false || remoteIdle -> Action.RESTORE
+               remoteIdle: Boolean, leaseOwned: Boolean, mediaReady: Boolean,
+               otherBluetoothSelected: Boolean = false): Action = when {
+        !enabled || aclConnected == false || remoteIdle || otherBluetoothSelected -> Action.RESTORE
         leaseOwned -> Action.HOLD
         mediaReady && (aclConnected == true || controlConfirmed) -> Action.HOLD
         else -> Action.WAIT

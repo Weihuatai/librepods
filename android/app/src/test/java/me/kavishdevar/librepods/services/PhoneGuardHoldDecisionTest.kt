@@ -26,4 +26,12 @@ class PhoneGuardHoldDecisionTest {
         assertEquals(restore, PhoneGuardHoldDecision.decide(false, true, true, false, true, true))
         assertEquals(restore, PhoneGuardHoldDecision.decide(true, false, true, false, true, true))
     }
+    @Test fun selectingAnotherBluetoothDestinationReleasesTheGlobalSuspendLease() {
+        assertEquals(restore, PhoneGuardHoldDecision.decide(true, true, true, false, true, false,
+            otherBluetoothSelected = true))
+    }
+    @Test fun unknownRouteOrSpeakerFallbackDoesNotPretendToBeAnotherBluetoothDestination() {
+        assertEquals(hold, PhoneGuardHoldDecision.decide(true, true, true, false, true, false,
+            otherBluetoothSelected = false))
+    }
 }

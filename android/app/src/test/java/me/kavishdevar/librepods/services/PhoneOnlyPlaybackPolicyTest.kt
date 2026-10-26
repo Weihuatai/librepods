@@ -65,6 +65,50 @@ class PhoneOnlyPlaybackPolicyTest {
         p.remote(mac, false)
         assertFalse(p.shouldHold())
     }
+    @Test fun repeatedCompleteAbsenceReleasesAMacThatDisconnectedWithoutAStopPacket() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.connectedDevices(listOf(mac)); p.remote(mac, true)
+        p.connectedDevices(emptyList())
+        assertTrue(p.shouldHold())
+        assertTrue(p.needsPeerConfirmation())
+        p.peerConfirmationRequestSent()
+        p.connectedDevices(emptyList())
+        assertFalse(p.shouldHold())
+        assertFalse(p.hasBusyRemote())
+        assertFalse(p.needsPeerConfirmation())
+    }
+    @Test fun playbackBetweenAbsentSnapshotsInvalidatesTheDisconnectCandidate() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.remote(mac, true); p.connectedDevices(emptyList())
+        p.peerConfirmationRequestSent()
+        p.remote(mac, true); p.connectedDevices(emptyList())
+        assertTrue(p.shouldHold())
+    }
+    @Test fun aPeerReturningToTheListCancelsDisconnectConfirmation() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.remote(mac, true); p.connectedDevices(emptyList())
+        p.peerConfirmationRequestSent()
+        p.connectedDevices(listOf(mac)); p.connectedDevices(emptyList())
+        assertTrue(p.shouldHold())
+    }
+    @Test fun disconnectingOneHostDoesNotReleaseAnotherPlayingHost() {
+        val p = PhoneOnlyPlaybackPolicy()
+        val other = "AA:BB:CC:DD:EE:03"
+        p.remote(mac, true); p.remote(other, true)
+        p.connectedDevices(listOf(other)); p.peerConfirmationRequestSent(); p.connectedDevices(listOf(other))
+        assertTrue(p.shouldHold())
+        p.remote(other, false)
+        assertFalse(p.shouldHold())
+    }
+    @Test fun repeatedUnsolicitedEmptySnapshotsCannotReleaseAPlayingMac() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.remote(mac, true)
+        repeat(5) { p.connectedDevices(emptyList()) }
+        assertTrue(p.shouldHold())
+        p.peerConfirmationRequestSent()
+        p.connectedDevices(emptyList())
+        assertFalse(p.shouldHold())
+    }
     @Test fun remoteStartOverridesPreviouslyIdlePhoneAdmission() {
         val p = PhoneOnlyPlaybackPolicy()
         p.remote(mac, false)

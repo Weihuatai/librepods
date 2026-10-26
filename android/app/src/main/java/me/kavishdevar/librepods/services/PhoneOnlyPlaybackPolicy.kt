@@ -8,25 +8,45 @@ internal class PhoneOnlyPlaybackPolicy {
     private var peersKnown = false
     private var peers = emptySet<String>()
     private var ownershipHintSeen = false
+    private var missingBusy = emptySet<String>()
+    private var peerConfirmationRequested = false
 
     @Synchronized fun reset() {
         busy.clear(); state = State.UNKNOWN; peersKnown = false; peers = emptySet(); ownershipHintSeen = false
+        missingBusy = emptySet(); peerConfirmationRequested = false
     }
     @Synchronized fun connectedDevices(remoteAddresses: List<String>) {
         peersKnown = true
         peers = remoteAddresses.map { it.uppercase() }.toSet()
+        val absent = busy - peers
+        // One empty snapshot during a handoff is insufficient. The service asks
+        // for another full snapshot; only repeated absence clears stale playback.
+        val confirmedAbsent = absent.isNotEmpty() && absent == missingBusy && peerConfirmationRequested
+        if (confirmedAbsent) {
+            busy.removeAll(absent)
+            missingBusy = emptySet(); peerConfirmationRequested = false
+            if (busy.isEmpty() && peers.isEmpty()) ownershipHintSeen = false
+        } else if (absent != missingBusy) {
+            missingBusy = absent; peerConfirmationRequested = false
+        }
         state = when {
             busy.isNotEmpty() -> State.REMOTE_PLAYING
             peers.isEmpty() -> State.REMOTE_IDLE
+            confirmedAbsent -> State.UNKNOWN
             else -> state
         }
     }
     @Synchronized fun hasPeerSnapshot() = peersKnown
+    @Synchronized fun needsPeerConfirmation() = missingBusy.isNotEmpty()
+    @Synchronized fun peerConfirmationRequestSent() {
+        if (missingBusy.isNotEmpty()) peerConfirmationRequested = true
+    }
     @Synchronized fun expectRemote(request: Boolean = false) {
         if (request) ownershipHintSeen = true
         if (busy.isEmpty()) state = State.UNKNOWN
     }
     @Synchronized fun remote(address: String, active: Boolean) {
+        missingBusy = emptySet(); peerConfirmationRequested = false
         if (active) busy.add(address.uppercase()) else busy.remove(address.uppercase())
         state = if (busy.isEmpty()) State.REMOTE_IDLE else State.REMOTE_PLAYING
     }

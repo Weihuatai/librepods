@@ -291,12 +291,6 @@ fun AppSettingsScreen(
                 )
             }
 
-            StyledToggle(
-                label = stringResource(R.string.phone_no_preempt),
-                description = stringResource(R.string.phone_no_preempt_description),
-                checked = state.phoneNoPreempt,
-                onCheckedChange = viewModel::setPhoneNoPreempt
-            )
             PlaybackPriorityStatusCard()
             StyledList(title = stringResource(R.string.takeover_airpods_state)) {
                 StyledToggle(

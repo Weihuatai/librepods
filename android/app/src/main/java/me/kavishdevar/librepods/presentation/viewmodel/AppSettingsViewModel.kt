@@ -150,7 +150,7 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
                 vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false),
-                nonPreemptiveAudio = sharedPreferences.getBoolean("non_preemptive_audio", false),
+                nonPreemptiveAudio = false,
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
                 showIslandPopup = sharedPreferences.getBoolean("show_island_popup", true),
@@ -241,8 +241,8 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun setNonPreemptiveAudio(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("non_preemptive_audio", enabled) }
-        _uiState.update { it.copy(nonPreemptiveAudio = enabled) }
+        sharedPreferences.edit { putBoolean("non_preemptive_audio", false) }
+        _uiState.update { it.copy(nonPreemptiveAudio = false) }
     }
 
     fun setVendorIdHook(enabled: Boolean) {

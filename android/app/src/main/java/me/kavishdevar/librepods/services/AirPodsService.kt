@@ -324,12 +324,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         ).joinToString("\n")
     }
 
-    private fun isNonPreemptiveAudioRequested(): Boolean =
-        this::sharedPreferences.isInitialized && sharedPreferences.getBoolean("non_preemptive_audio", false)
+    // Withdrawn: Android-only implementation did not satisfy connected, bidirectional arbitration.
+    // Keep recovery paths for profiles/mute saved by older test builds, but never enable it.
+    private fun isNonPreemptiveAudioRequested(): Boolean = false
 
-    fun isNonPreemptiveAudioEnabled(): Boolean =
-        isNonPreemptiveAudioRequested() &&
-            checkSelfPermission("android.permission.BLUETOOTH_PRIVILEGED") == PackageManager.PERMISSION_GRANTED
+    fun isNonPreemptiveAudioEnabled(): Boolean = false
 
     private fun priorityReady(): Boolean {
         val enabled = isNonPreemptiveAudioEnabled()
@@ -621,6 +620,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         _packetLogsFlow.value = inMemoryLogs.toSet()
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
+        sharedPreferences.edit(commit = true) { putBoolean("non_preemptive_audio", false) }
         // Repair a route saved by an interrupted opt-out before the service stopped.
         if (!isNonPreemptiveAudioEnabled()) priorityRouteGate.restore()
         if (!isNonPreemptiveAudioEnabled()) prioritySilencer.restore()

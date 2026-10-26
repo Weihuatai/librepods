@@ -80,7 +80,7 @@ android {
             if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            versionNameSuffix = "-no-preempt-test6"
+            versionNameSuffix = "-connection-fixes-test7"
             defaultConfig {
                 minSdk = 33
             }

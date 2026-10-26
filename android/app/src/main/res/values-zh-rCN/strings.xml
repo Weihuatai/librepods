@@ -281,6 +281,7 @@
     <string name="non_preemptive_audio">不抢占播放（实验）</string>
     <string name="non_preemptive_audio_description">先播放的设备保留耳机。另一台播放期间，手机媒体继续走进度但保持静音；确认另一台停播后可自动切换，耳机输出就绪后恢复声音。需配套系统模块。临时静音作用于手机媒体音频。</string>
     <string name="phone_no_preempt">手机不打断其他设备（实验）</string>
+    <string name="noise_control_connecting">耳机控制连接中</string>
     <string name="phone_no_preempt_description">另一台设备播放时，手机媒体继续走进度但不打断耳机；确认对方停播后恢复。初次连接状态未知时先保持保护，需 Root。不阻止 Mac 接管手机；电话通话不属于本次媒体实验。</string>
     <string name="priority_status_title">手机音频保护与恢复状态</string>
     <string name="priority_copy_status">复制状态</string>

@@ -6,6 +6,24 @@ import org.junit.Test
 class PhoneOnlyPlaybackPolicyTest {
     private val mac = "AA:BB:CC:DD:EE:01"
     private val phone = "AA:BB:CC:DD:EE:02"
+    @Test fun validatedGlobalIdleCanFinishInitialBothIdleConnection() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.connectedDevices(listOf(mac))
+        p.source("00:00:00:00:00:00", local = false, idle = true, fresh = true)
+        assertFalse(p.shouldHold())
+    }
+    @Test fun globalIdleWithoutACompletePeerSnapshotCannotAdmitPhone() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.source("00:00:00:00:00:00", local = false, idle = true, fresh = true)
+        assertTrue(p.shouldHold())
+    }
+    @Test fun globalNoneDuringExplicitRemoteHandoffIsNotInitialIdle() {
+        val p = PhoneOnlyPlaybackPolicy()
+        p.connectedDevices(listOf(mac))
+        p.expectRemote(request = true)
+        p.source("00:00:00:00:00:00", local = false, idle = true, fresh = true)
+        assertTrue(p.shouldHold())
+    }
     @Test fun ownershipHintWaitsForPlaybackEvidenceWithoutInventingAnActivePlayer() {
         val p = PhoneOnlyPlaybackPolicy()
         p.remote(mac, false)

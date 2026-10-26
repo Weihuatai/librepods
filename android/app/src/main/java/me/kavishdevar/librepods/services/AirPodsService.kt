@@ -164,6 +164,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var otherDeviceTookOver = false
     private val playbackPriority = PlaybackPriorityPolicy()
     private val phoneOnlyPolicy = PhoneOnlyPlaybackPolicy()
+    @Volatile private var noiseControlReadyGeneration = -1L
+    @Volatile private var controlConnectedAt = 0L
     private var phoneGuardGeneration = -1L
     private var phoneResumeSent = false
     private var phoneProfileCheckPending = false
@@ -191,6 +193,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun phoneGuardEnabled() = this::sharedPreferences.isInitialized &&
         sharedPreferences.getBoolean("phone_no_preempt", false)
+
+    fun isNoiseControlReady(): Boolean = controlSessions.snapshot().let {
+        it.active && it.generation == noiseControlReadyGeneration && BluetoothConnectionManager.aacpSocket?.isConnected == true
+    }
+
+    fun requestNoiseControlSnapshot() {
+        if (this::aacpManager.isInitialized && BluetoothConnectionManager.aacpSocket?.isConnected == true)
+            aacpManager.sendNotificationRequest()
+    }
 
     private fun phoneGuardHasCompanion(): Boolean = this::aacpManager.isInitialized &&
         (phoneOnlyPolicy.hasBusyRemote() || aacpManager.connectedDevices.any { !it.mac.equals(localMac, true) })
@@ -439,6 +450,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 "另一台播放状态：${phoneOnlyPolicy.state()}",
                 "设备列表已确认：${phoneOnlyPolicy.hasPeerSnapshot()}（未收到不等于没有 Mac）",
                 "耳机控制会话：${confirmedControlConnection()}; companion=${phoneGuardHasCompanion()}",
+                "耳机模式控制已就绪：${isNoiseControlReady()}",
                 "耳机音源：${aacpManager.audioSource?.let { "${it.type}/${if (it.mac.equals(localMac, true)) "phone" else "other"}" } ?: "unknown"}",
                 "媒体连接：$phoneMediaConnection（2=已连接）；媒体输出：$output",
                 "保护前提：$phoneGuardPrerequisite",
@@ -1376,6 +1388,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             override fun onControlCommandReceived(controlCommand: ByteArray) {
                 val command = AACPManager.ControlCommand.fromByteArray(controlCommand)
                 if (command.identifier == AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value) {
+                    val generation = controlSessions.snapshot().generation
+                    val mode = command.value.firstOrNull()?.toInt() ?: 0
+                    if (mode in 1..4 && noiseControlReadyGeneration != generation) {
+                        noiseControlReadyGeneration = generation
+                        phoneGuardTrace.record("control", "noise_mode_ready_ms=${android.os.SystemClock.elapsedRealtime() - controlConnectedAt}")
+                    }
                     ancNotification.setStatus(byteArrayOf(command.value.takeIf { it.isNotEmpty() }
                         ?.get(0) ?: 0x00.toByte()))
                     sendANCBroadcast()
@@ -1414,7 +1432,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             override fun onOwnershipToFalseRequest(sender: String, reasonReverseTapped: Boolean) {
                 if (phoneGuardEnabled()) {
                     preparePhoneSession()
-                    phoneOnlyPolicy.expectRemote()
+                    phoneOnlyPolicy.expectRemote(request = true)
                     phoneGuardTrace.record("ownership", "remote request; awaiting playback state")
                     aacpManager.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 0)
                     otherDeviceTookOver = true
@@ -3173,6 +3191,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun connectControlSocket(adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean) {
         if (BluetoothConnectionManager.aacpSocket != null && BluetoothConnectionManager.aacpSocket?.isConnected == true) return
         val sessionId = controlSessions.begin()
+        noiseControlReadyGeneration = -1L
+        controlConnectedAt = android.os.SystemClock.elapsedRealtime()
+        val protectedInitialization = phoneGuardEnabled()
+        val bootstrap = ControlChannelBootstrap()
         val previousAuxiliary = BluetoothConnectionManager.attSocket
         BluetoothConnectionManager.attSocket = null
         runCatching { previousAuxiliary?.close() }
@@ -3269,16 +3291,44 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 return
             }
             this@AirPodsService.device = device
+            controlConnectedAt = android.os.SystemClock.elapsedRealtime()
             socket.let {
+                fun configureProtectedControl() {
+                    sendForSession {
+                        aacpManager.sendSetFeatureFlagsPacket()
+                        aacpManager.sendNotificationRequest()
+                        setupStemActions()
+                        phoneGuardTrace.record("control", "peer_reply_configure_ms=${android.os.SystemClock.elapsedRealtime() - controlConnectedAt}")
+                    }
+                }
                 if (!sendForSession {
                     aacpManager.sendPacket(aacpManager.createHandshakePacket())
-                    aacpManager.sendSetFeatureFlagsPacket()
-                    aacpManager.sendNotificationRequest()
-                    aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
+                    if (!protectedInitialization) {
+                        aacpManager.sendSetFeatureFlagsPacket()
+                        aacpManager.sendNotificationRequest()
+                        aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
+                    }
                 }) return@let
                 CoroutineScope(Dispatchers.IO).launch {
                     // Read immediately; retries and optional ATT setup cannot delay the reader.
                     launch initialization@ {
+                        if (protectedInitialization) {
+                            // Replies trigger immediate configuration. These are loss
+                            // recovery requests, not a fixed readiness wait.
+                            for (delayMs in listOf(1_000L, 1_000L, 2_000L)) {
+                                delay(delayMs)
+                                if (!sendForSession {
+                                    if (bootstrap.needsHandshake()) aacpManager.sendPacket(aacpManager.createHandshakePacket())
+                                    else if (!isNoiseControlReady() || !phoneOnlyPolicy.hasPeerSnapshot()) aacpManager.sendNotificationRequest()
+                                }) return@initialization
+                            }
+                            sendForSession {
+                                aacpManager.sendSomePacketIDontKnowWhatItIs()
+                                aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
+                                if (handleIncomingCallOnceConnected) handleIncomingCall()
+                            }
+                            return@initialization
+                        }
                         delay(200)
                         if (!sendForSession { aacpManager.sendPacket(aacpManager.createHandshakePacket()) }) return@initialization
                         delay(200)
@@ -3346,7 +3396,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                 setPackage(packageName)
                             })
 
-                    sendForSession { setupStemActions() }
+                    if (!protectedInitialization) sendForSession { setupStemActions() }
 
                     while (socket.isConnected && currentSession()) {
                         try {
@@ -3357,6 +3407,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             if (bytesRead > 0) {
                                 controlSessions.reply(sessionId)
                                 data = buffer.copyOfRange(0, bytesRead)
+                                if (protectedInitialization && bootstrap.onReply(data)) configureProtectedControl()
                                 sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DATA).apply {
                                     putExtra("data", buffer.copyOfRange(0, bytesRead))
                                     setPackage(packageName)

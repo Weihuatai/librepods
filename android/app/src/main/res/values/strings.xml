@@ -292,6 +292,7 @@
     <string name="non_preemptive_audio">Do not interrupt playback (experimental)</string>
     <string name="non_preemptive_audio_description">The playing device keeps the earbuds. While another device plays, phone media keeps advancing silently. Once that device stops, phone playback can switch automatically; sound returns only after the AirPods route is confirmed. Requires the companion system module. Temporary mute applies to phone media.</string>
     <string name="phone_no_preempt">Phone does not interrupt other devices (experiment)</string>
+    <string name="noise_control_connecting">Connecting earbud controls</string>
     <string name="phone_no_preempt_description">Keep phone media advancing silently while another device plays, then restore sound when it stops. Protect playback while initial device state is unknown. Requires root. Does not stop the Mac taking over; phone calls are outside this media experiment.</string>
     <string name="priority_status_title">Phone audio protection and recovery</string>
     <string name="priority_copy_status">Copy status</string>

@@ -7,8 +7,11 @@ internal class PhoneOnlyPlaybackPolicy {
     private var state = State.UNKNOWN
     private var peersKnown = false
     private var peers = emptySet<String>()
+    private var ownershipHintSeen = false
 
-    @Synchronized fun reset() { busy.clear(); state = State.UNKNOWN; peersKnown = false; peers = emptySet() }
+    @Synchronized fun reset() {
+        busy.clear(); state = State.UNKNOWN; peersKnown = false; peers = emptySet(); ownershipHintSeen = false
+    }
     @Synchronized fun connectedDevices(remoteAddresses: List<String>) {
         peersKnown = true
         peers = remoteAddresses.map { it.uppercase() }.toSet()
@@ -19,7 +22,8 @@ internal class PhoneOnlyPlaybackPolicy {
         }
     }
     @Synchronized fun hasPeerSnapshot() = peersKnown
-    @Synchronized fun expectRemote() {
+    @Synchronized fun expectRemote(request: Boolean = false) {
+        if (request) ownershipHintSeen = true
         if (busy.isEmpty()) state = State.UNKNOWN
     }
     @Synchronized fun remote(address: String, active: Boolean) {
@@ -30,7 +34,12 @@ internal class PhoneOnlyPlaybackPolicy {
         if (!idle && !local) remote(address, true)
         // An idle report must identify the stopped remote host. A phone/NONE report
         // produced during an attempted takeover must not release a busy Mac.
-        else if (idle && fresh && !local) {
+        else if (idle && fresh && address == "00:00:00:00:00:00" && peersKnown &&
+            busy.isEmpty() && !ownershipHintSeen && state == State.UNKNOWN) {
+            // The observed initial all-idle snapshot uses a zero address. It is
+            // not admitted during ownership handoff or against Mac-playing evidence.
+            state = State.REMOTE_IDLE
+        } else if (idle && fresh && !local) {
             if (address.uppercase() in busy || (busy.isEmpty() && valid(address))) remote(address, false)
         } else if (idle && fresh && local && busy.isEmpty() && peersKnown && peers.isEmpty()) state = State.REMOTE_IDLE
     }

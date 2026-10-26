@@ -80,7 +80,7 @@ android {
             if (releaseSigningAvailable) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            versionNameSuffix = "-phone-guard-test11"
+            versionNameSuffix = "-phone-guard-test12"
             defaultConfig {
                 minSdk = 33
             }

@@ -135,6 +135,12 @@ class AirPodsQSService : TileService() {
             Log.d("AirPodsQSService", "Tile clicked but AirPods not connected.")
             return
         }
+        val service = ServiceManager.getService()
+        if (service?.isNoiseControlReady() != true) {
+            service?.requestNoiseControlSnapshot()
+            updateTile()
+            return
+        }
 
         val clickBehavior = "cycle" // sharedPreferences.getString("qs_click_behavior", "dialog") ?: "dialog"
 
@@ -194,8 +200,9 @@ class AirPodsQSService : TileService() {
         val deviceName = sharedPreferences.getString("name", "AirPods") ?: "AirPods"
 
         if (isAirPodsConnected) {
-            tile.state = Tile.STATE_ACTIVE
-            tile.label = getModeLabel(currentAncMode)
+            val ready = ServiceManager.getService()?.isNoiseControlReady() == true
+            tile.state = if (ready) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+            tile.label = if (ready) getModeLabel(currentAncMode) else getString(R.string.noise_control_connecting)
             tile.subtitle = deviceName
             tile.icon = Icon.createWithResource(this, getModeIcon(currentAncMode))
         } else {

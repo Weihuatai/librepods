@@ -516,8 +516,12 @@ class AACPManager {
             }
 
             Opcodes.CONNECTED_DEVICES -> {
+                val parsed = try { parseConnectedDevicesResponse(packet) } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "Ignored incomplete connected-device snapshot: ${error.message}")
+                    return
+                }
                 oldConnectedDevices = connectedDevices
-                connectedDevices = parseConnectedDevicesResponse(packet)
+                connectedDevices = parsed
                 callback?.onConnectedDevicesReceived(connectedDevices)
             }
 
@@ -1223,34 +1227,10 @@ class AACPManager {
             TAG,
             "Parsing Connected Devices Response: ${data.joinToString(" ") { "%02X".format(it) }}"
         )
-        if (data.size < 8) {
-            throw IllegalArgumentException("Data array too short to parse Connected Devices Response")
+        return ConnectedDevicesPacketParser.parse(data).map { entry ->
+            ConnectedDevice(entry.mac, entry.info1, entry.info2,
+                connectedDevices.find { it.mac.equals(entry.mac, true) }?.type)
         }
-        if (data[4] != Opcodes.CONNECTED_DEVICES) {
-            throw IllegalArgumentException("Data array does not start with CONNECTED_DEVICES opcode")
-        }
-        val deviceCount = data[8].toInt()
-        val devices = mutableListOf<ConnectedDevice>()
-
-        var offset = 9
-        for (i in 0 until deviceCount) {
-            if (offset + 8 > data.size) {
-                Log.w(
-                    TAG,
-                    "Data array too short to parse all connected devices, returning what we have"
-                )
-                break
-            }
-            val macBytes = data.sliceArray(offset until offset + 6)
-            val mac = macBytes.joinToString(":") { "%02X".format(it) }
-            val info1 = data[offset + 6]
-            val info2 = data[offset + 7]
-            val existingDevice = devices.find { it.mac == mac }
-            devices.add(ConnectedDevice(mac, info1, info2, existingDevice?.type))
-            offset += 8
-        }
-
-        return devices
     }
 
     fun sendSomePacketIDontKnowWhatItIs() {

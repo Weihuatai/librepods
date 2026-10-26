@@ -291,7 +291,9 @@
     <string name="eq_high">High</string>
     <string name="non_preemptive_audio">Do not interrupt playback (experimental)</string>
     <string name="non_preemptive_audio_description">The playing device keeps the earbuds. While another device plays, phone media keeps advancing silently. Once that device stops, phone playback can switch automatically; sound returns only after the AirPods route is confirmed. Requires the companion system module. Temporary mute applies to phone media.</string>
-    <string name="priority_status_title">Connection recovery status</string>
+    <string name="phone_no_preempt">Phone does not interrupt other devices (experiment)</string>
+    <string name="phone_no_preempt_description">Keep phone media advancing silently while another device plays, then restore sound when it stops. Protect playback while initial device state is unknown. Requires root. Does not stop the Mac taking over; phone calls are outside this media experiment.</string>
+    <string name="priority_status_title">Phone audio protection and recovery</string>
     <string name="priority_copy_status">Copy status</string>
     <string name="priority_granted">Granted</string>
     <string name="priority_missing">Missing</string>
@@ -315,7 +317,7 @@
     <string name="priority_transition">Connecting or disconnecting</string>
     <string name="priority_forbidden">Policy blocked</string>
     <string name="priority_permitted">Policy allows connection</string>
-    <string name="priority_status_hint">The non-preemptive experiment has been withdrawn. This build restores saved media mute and Bluetooth connection policies. Copy this status if normal audio does not return.</string>
+    <string name="priority_status_hint">The new switch tests phone-only protection while retaining the media connection. A confirmed framework suspend state does not prove the earbuds were protected. Copy this status if playback still switches or cannot recover. Older disconnect/mute experiments remain disabled.</string>
     <string name="priority_mode_on">Playback protection: on</string>
     <string name="priority_mode_off">Playback protection: off (profile protection is inactive)</string>
     <string name="priority_control_verified">Earbud control: data received from this connection</string>

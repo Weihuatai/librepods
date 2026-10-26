@@ -163,7 +163,161 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
     private val playbackPriority = PlaybackPriorityPolicy()
-    private val phoneSuspendRecovery by lazy { PhoneSuspendRecovery(this) }
+    private val phoneOnlyPolicy = PhoneOnlyPlaybackPolicy()
+    private var phoneGuardGeneration = -1L
+    private var phoneResumeSent = false
+    private var phoneProfileCheckPending = false
+    private var phoneMediaConnection: Int? = null
+    private var phoneMediaAddress = ""
+    private var phoneMediaCheckedAt = 0L
+    private var phoneGuardPrerequisite = "等待连接检查"
+    private var phoneGuardServiceDestroyed = false
+    private val phoneGuardTrace by lazy { PhoneGuardTrace(this) }
+    private val phoneTransport: PhoneA2dpTransport by lazy { PhoneA2dpTransport(this, changed = {
+        // A disable event may race an in-flight HOLD. Finish its recovery as soon
+        // as the helper replies, even if the regular feature audit was cancelled.
+        if (!phoneGuardServiceDestroyed) {
+            if (!phoneGuardEnabled() && phoneTransport.needsRecovery()) {
+                updatePhoneGuard()
+                schedulePriorityAudit()
+            }
+            resumePhoneAfterRemoteStops()
+        }
+    }, report = { phoneGuardTrace.record("transport", it) }) }
+    private val phoneGuardWakeLock by lazy {
+        getSystemService(android.os.PowerManager::class.java).newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK, "LibrePods:PhoneAudioGuard").apply { setReferenceCounted(false) }
+    }
+
+    private fun phoneGuardEnabled() = this::sharedPreferences.isInitialized &&
+        sharedPreferences.getBoolean("phone_no_preempt", false)
+
+    private fun phoneGuardHasCompanion(): Boolean = this::aacpManager.isInitialized &&
+        (phoneOnlyPolicy.hasBusyRemote() || aacpManager.connectedDevices.any { !it.mac.equals(localMac, true) })
+
+    private fun phoneGuardBlocks(): Boolean {
+        if (!phoneGuardEnabled()) return false
+        val acl = actualAclConnected()
+        return acl != false &&
+            (acl == true || confirmedControlConnection() || phoneTransport.needsRecovery() || phoneTransport.requestingHold()) &&
+            (phoneOnlyPolicy.shouldHold() || !phoneTransport.canPlay())
+    }
+
+    private fun stopPhoneGuardAuxiliary() {
+        val auxiliary = BluetoothConnectionManager.attSocket ?: return
+        BluetoothConnectionManager.attSocket = null
+        if (this::attManager.isInitialized) attManager.stopReader()
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { auxiliary.close() }
+            phoneGuardTrace.record("auxiliary", "closed for phone-only protection")
+        }
+    }
+
+    private fun observePhoneSource(fresh: Boolean) {
+        preparePhoneSession()
+        val source = aacpManager.audioSource ?: return
+        if (localMac.isBlank()) return
+        phoneOnlyPolicy.source(source.mac, source.mac.equals(localMac, true),
+            source.type == AACPManager.Companion.AudioSourceType.NONE, fresh)
+    }
+
+    @Synchronized private fun preparePhoneSession() {
+        val generation = controlSessions.snapshot().generation
+        if (generation == phoneGuardGeneration) return
+        phoneGuardGeneration = generation
+        phoneOnlyPolicy.reset(); phoneResumeSent = false
+        if (this::aacpManager.isInitialized && localMac.isNotBlank()) aacpManager.audioSource?.let {
+            phoneOnlyPolicy.source(it.mac, it.mac.equals(localMac, true),
+                it.type == AACPManager.Companion.AudioSourceType.NONE, false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun checkPhoneMediaConnection() {
+        if (phoneProfileCheckPending || !BluetoothAdapter.checkBluetoothAddress(macAddress)) return
+        if (phoneMediaAddress.equals(macAddress, true) &&
+            android.os.SystemClock.elapsedRealtime() - phoneMediaCheckedAt < 3_000L) return
+        val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
+        val address = macAddress
+        phoneProfileCheckPending = true
+        val bound = runCatching { adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                try {
+                    phoneMediaConnection = proxy.getConnectionState(adapter.getRemoteDevice(address))
+                    phoneMediaAddress = address
+                    phoneMediaCheckedAt = android.os.SystemClock.elapsedRealtime()
+                } finally {
+                    phoneProfileCheckPending = false
+                    adapter.closeProfileProxy(profile, proxy)
+                }
+                updatePhoneGuard()
+            }
+            override fun onServiceDisconnected(profile: Int) { phoneProfileCheckPending = false }
+        }, BluetoothProfile.A2DP) }.getOrDefault(false)
+        if (!bound) phoneProfileCheckPending = false
+    }
+
+    private fun phoneMediaOutputs(): List<AudioDeviceInfo>? = runCatching {
+        getSystemService(AudioManager::class.java).getAudioDevicesForAttributes(
+            android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
+            .takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun updatePhoneGuard() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            priorityAuditHandler.post { updatePhoneGuard() }; return
+        }
+        preparePhoneSession()
+        val acl = actualAclConnected()
+        val control = confirmedControlConnection()
+        if (phoneGuardEnabled() && acl != false) checkPhoneMediaConnection()
+        val output = phoneMediaOutputs()
+        val targetRoute = output?.all { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP &&
+            it.address.equals(macAddress, true) } == true
+        val profileConnected = phoneMediaAddress.equals(macAddress, true) &&
+            android.os.SystemClock.elapsedRealtime() - phoneMediaCheckedAt < 10_000L &&
+            phoneMediaConnection == BluetoothProfile.STATE_CONNECTED
+        val action = PhoneGuardHoldDecision.decide(phoneGuardEnabled(), acl, control,
+            !phoneOnlyPolicy.shouldHold(), phoneTransport.needsRecovery(), targetRoute && profileConnected)
+        phoneGuardPrerequisite = when {
+            !phoneGuardEnabled() -> "开关关闭"
+            acl == false -> "耳机已断开，释放本次保护"
+            !phoneOnlyPolicy.shouldHold() -> "已取得停播或无其他设备的完整状态"
+            action == PhoneGuardHoldDecision.Action.HOLD && (!targetRoute || !profileConnected) ->
+                "保留已有挂起；媒体路由发生变化，不自动放行"
+            action == PhoneGuardHoldDecision.Action.HOLD -> "保持媒体连接，请求系统挂起手机传输"
+            !profileConnected -> "未保护：手机媒体连接尚未确认"
+            !targetRoute -> "未保护：手机媒体输出未保持在 AirPods"
+            else -> "正在等待耳机会话"
+        }
+        phoneGuardTrace.decision("enabled=${phoneGuardEnabled()} action=$action state=${phoneOnlyPolicy.state()} " +
+            "peerSnapshot=${phoneOnlyPolicy.hasPeerSnapshot()} control=$control acl=$acl mediaReady=${targetRoute && profileConnected} " +
+            "lease=${phoneTransport.needsRecovery()}")
+        if (action == PhoneGuardHoldDecision.Action.HOLD && !phoneGuardWakeLock.isHeld) phoneGuardWakeLock.acquire()
+        if (action == PhoneGuardHoldDecision.Action.RESTORE && phoneGuardWakeLock.isHeld) phoneGuardWakeLock.release()
+        when (action) {
+            PhoneGuardHoldDecision.Action.HOLD -> phoneTransport.request(true)
+            PhoneGuardHoldDecision.Action.RESTORE -> phoneTransport.request(false)
+            PhoneGuardHoldDecision.Action.WAIT -> Unit
+        }
+        if (phoneOnlyPolicy.shouldHold()) phoneResumeSent = false
+    }
+
+    private fun resumePhoneAfterRemoteStops() {
+        if (!phoneGuardEnabled() || !confirmedControlConnection() || !phoneGuardHasCompanion() ||
+            phoneOnlyPolicy.shouldHold() || !phoneTransport.canPlay() || phoneResumeSent ||
+            localMac.isBlank() || !getSystemService(AudioManager::class.java).isMusicActive) return
+        MediaController.pausedForOtherDevice = false
+        MediaController.pausedWhileTakingOver = false
+        MediaController.recentlyLostOwnership = false
+        phoneResumeSent = true
+        val own = aacpManager.sendControlCommand(
+            AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1)
+        val media = aacpManager.sendMediaInformataion(localMac, true)
+        val hijack = aacpManager.sendHijackRequest(localMac)
+        phoneGuardTrace.record("resume", "own=$own media=$media hijack=$hijack")
+        if (own) otherDeviceTookOver = false
+    }
     private var priorityWasEnabled = false
     private var priorityCallActive = false
     @Volatile private var priorityPlaybackActive = false
@@ -180,12 +334,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         updatePrioritySilence()
     }
     private val mediaRouteCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) { updatePrioritySilence() }
-        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) { updatePrioritySilence() }
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) { updatePrioritySilence(); updatePhoneGuard() }
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) { updatePrioritySilence(); updatePhoneGuard() }
     }
     private val priorityAuditHandler = Handler(Looper.getMainLooper())
     private val priorityAudit = object : Runnable {
         override fun run() {
+            updatePhoneGuard()
+            if (phoneGuardEnabled() || phoneTransport.needsRecovery()) {
+                priorityAuditHandler.postDelayed(this, 1_000L)
+                return
+            }
             if (!priorityReady()) return
             updatePriorityRoute()
             // Verify the route independently of playback callbacks. This is not an idle grace period.
@@ -195,7 +354,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun schedulePriorityAudit() {
         priorityAuditHandler.removeCallbacks(priorityAudit)
-        if (isNonPreemptiveAudioEnabled()) priorityAuditHandler.post(priorityAudit)
+        if (phoneGuardServiceDestroyed) return
+        if (isNonPreemptiveAudioEnabled() || phoneGuardEnabled() || phoneTransport.needsRecovery()) priorityAuditHandler.post(priorityAudit)
     }
 
     private fun updatePrioritySilence() {
@@ -242,7 +402,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun keepMediaPlayingSilently(): Boolean =
-        isNonPreemptiveAudioEnabled() && (!playbackPriority.allowsLocal() || prioritySilencer.owned())
+        phoneGuardBlocks() || (isNonPreemptiveAudioEnabled() && (!playbackPriority.allowsLocal() || prioritySilencer.owned()))
 
     private fun confirmedControlConnection(): Boolean {
         val session = controlSessions.snapshot()
@@ -251,8 +411,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     private fun actualAclConnected(): Boolean? = try {
-        val target = device
-        target != null && BluetoothDevice::class.java.getMethod("isConnected").invoke(target) == true
+        val address = if (BluetoothAdapter.checkBluetoothAddress(macAddress)) macAddress else
+            if (this::sharedPreferences.isInitialized) sharedPreferences.getString("mac_address", "").orEmpty() else ""
+        val target = device ?: if (BluetoothAdapter.checkBluetoothAddress(address))
+            getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(address) else null
+        target?.let { BluetoothDevice::class.java.getMethod("isConnected").invoke(it) == true }
     } catch (_: Exception) { null }
 
     private fun connectionEvidence(): Triple<Long?, Boolean, Boolean> {
@@ -269,6 +432,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     internal fun priorityDiagnostics(): String {
+        if (phoneGuardEnabled()) {
+            val output = phoneMediaOutputs()?.joinToString { "${it.type}/${if (it.address.equals(macAddress, true)) "AirPods" else "other"}" } ?: "unknown"
+            return listOf(
+                "手机单向保护：开启（传输挂起实验）",
+                "另一台播放状态：${phoneOnlyPolicy.state()}",
+                "设备列表已确认：${phoneOnlyPolicy.hasPeerSnapshot()}（未收到不等于没有 Mac）",
+                "耳机控制会话：${confirmedControlConnection()}; companion=${phoneGuardHasCompanion()}",
+                "耳机音源：${aacpManager.audioSource?.let { "${it.type}/${if (it.mac.equals(localMac, true)) "phone" else "other"}" } ?: "unknown"}",
+                "媒体连接：$phoneMediaConnection（2=已连接）；媒体输出：$output",
+                "保护前提：$phoneGuardPrerequisite",
+                "系统挂起回报：${phoneTransport.snapshot ?: "尚未取得"}",
+                "挂起已确认：${phoneTransport.holding()}（不代表已通过耳机实测）",
+                "允许手机接管：${!phoneGuardBlocks()}",
+                "错误：${phoneTransport.error ?: "无"}",
+                "未改媒体音量、未断开媒体连接；不阻止 Mac 接管手机。"
+            ).joinToString("\n")
+        }
         val profiles = priorityRouteGate.snapshot()
         val owner = when (playbackPriority.snapshot()) {
             PlaybackPriorityPolicy.Owner.UNKNOWN -> R.string.priority_owner_unknown
@@ -297,8 +477,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             else -> R.string.priority_control_pending
         }
         return listOf(
-            "Test 9 单向挂起实验：已撤下，固定停用",
-            phoneSuspendRecovery.status,
             getString(when {
                 isNonPreemptiveAudioEnabled() -> R.string.priority_mode_on
                 isNonPreemptiveAudioRequested() -> R.string.priority_mode_unavailable
@@ -384,6 +562,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     /** Called for every playback callback, including non-music sounds, before media state reporting. */
     fun onPriorityLocalPlayback(active: Boolean): Boolean {
         priorityPlaybackActive = active
+        if (phoneGuardEnabled()) {
+            updatePhoneGuard()
+            return !phoneGuardBlocks()
+        }
         if (!priorityReady()) return true
         // A phone video with the earbuds disconnected must not be paused or claim ownership.
         if (!confirmedControlConnection() || actualAclConnected() == false) return true
@@ -398,7 +580,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun priorityAllowsLocalAudio(): Boolean =
-        !priorityReady() || playbackPriority.allowsLocal()
+        !phoneGuardBlocks() && (!priorityReady() || playbackPriority.allowsLocal())
 
     private fun protectPriorityLocal(): Boolean =
         priorityReady() && playbackPriority.protectsLocal()
@@ -623,14 +805,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         _packetLogsFlow.value = inMemoryLogs.toSet()
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
-        sharedPreferences.edit(commit = true) {
-            putBoolean("non_preemptive_audio", false)
-            putBoolean("phone_no_preempt", false)
-        }
-        phoneSuspendRecovery.startOnce()
+        sharedPreferences.edit(commit = true) { putBoolean("non_preemptive_audio", false) }
         // Repair a route saved by an interrupted opt-out before the service stopped.
         if (!isNonPreemptiveAudioEnabled()) priorityRouteGate.restore()
         if (!isNonPreemptiveAudioEnabled()) prioritySilencer.restore()
+        if (!phoneGuardEnabled()) phoneTransport.request(false)
         getSystemService(AudioManager::class.java).registerAudioDeviceCallback(mediaRouteCallback, priorityAuditHandler)
         initializeConfig()
 
@@ -1205,6 +1384,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onOwnershipChangeReceived(owns: Boolean) {
+                if (!owns && phoneGuardEnabled()) {
+                    preparePhoneSession()
+                    phoneOnlyPolicy.expectRemote()
+                    phoneGuardTrace.record("ownership", "remote ownership hint; awaiting playback state")
+                    otherDeviceTookOver = true
+                    updatePhoneGuard()
+                    return
+                }
                 if (!owns && protectPriorityLocal()) {
                     Log.i("PlaybackPriority", "Ignored ownership-loss pause while local owner is protected; firmware may still change its route")
                     return
@@ -1225,6 +1412,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onOwnershipToFalseRequest(sender: String, reasonReverseTapped: Boolean) {
+                if (phoneGuardEnabled()) {
+                    preparePhoneSession()
+                    phoneOnlyPolicy.expectRemote()
+                    phoneGuardTrace.record("ownership", "remote request; awaiting playback state")
+                    aacpManager.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 0)
+                    otherDeviceTookOver = true
+                    updatePhoneGuard()
+                    return
+                }
                 if (protectPriorityLocal()) {
                     Log.i("PlaybackPriority", "Declined remote ownership request while local device is playing")
                     return
@@ -1387,6 +1583,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onRemotePlaybackState(sender: String, active: Boolean) {
+                if (phoneGuardEnabled() && !sender.equals(localMac, true)) {
+                    preparePhoneSession()
+                    phoneOnlyPolicy.remote(sender, active)
+                    phoneGuardTrace.record("remote", "streaming=$active")
+                    updatePhoneGuard()
+                    return
+                }
                 if (!priorityReady() || sender.equals(localMac, ignoreCase = true)) return
                 val accepted = playbackPriority.remoteStreaming(sender, active)
                 Log.i("PlaybackPriority", "Remote active=$active accepted=$accepted")
@@ -1394,6 +1597,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onAudioSourceReceived(audioSource: ByteArray) {
+                if (phoneGuardEnabled()) {
+                    observePhoneSource(fresh = true)
+                    phoneGuardTrace.record("source", "type=${aacpManager.audioSource?.type} local=${aacpManager.audioSource?.mac.equals(localMac, true)}")
+                    updatePhoneGuard()
+                }
                 if (priorityReady()) {
                     observePrioritySource()
                     if (protectPriorityLocal()) return
@@ -1419,6 +1627,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onConnectedDevicesReceived(connectedDevices: List<AACPManager.Companion.ConnectedDevice>) {
+                if (phoneGuardEnabled()) {
+                    preparePhoneSession()
+                    val remotes = connectedDevices.filter { !it.mac.equals(localMac, true) }.map { it.mac }
+                    phoneOnlyPolicy.connectedDevices(remotes)
+                    phoneGuardTrace.record("peers", "complete=true remoteCount=${remotes.size}")
+                    updatePhoneGuard()
+                }
                 for (device in connectedDevices) {
                     Log.d(
                         "AirPodsParser",
@@ -1754,6 +1969,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (preferences == null || key == null) return
 
         when (key) {
+            "phone_no_preempt" -> {
+                phoneOnlyPolicy.reset(); phoneResumeSent = false
+                if (phoneGuardEnabled()) stopPhoneGuardAuxiliary()
+                if (phoneGuardEnabled() && this::aacpManager.isInitialized) {
+                    observePhoneSource(fresh = false)
+                    aacpManager.sendNotificationRequest()
+                }
+                updatePhoneGuard()
+                schedulePriorityAudit()
+            }
             "non_preemptive_audio" -> {
                 priorityReady()
                 updatePriorityRoute()
@@ -2758,6 +2983,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false
     ) {
+        if (phoneGuardBlocks()) { updatePhoneGuard(); return }
         if (takingOverFor != "reverse") {
             val (age, worn, docked) = connectionEvidence()
             if (!ConnectionEvidence.mayAttemptAutomatically(confirmedControlConnection(), actualAclConnected() == true, age, worn, docked)) {
@@ -3079,7 +3305,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         if (!currentSession()) return@auxiliary
                         val xposedRemotePref = XposedRemotePrefProvider.create()
                         // An optional auxiliary channel must not abort the primary control session.
-                        val attSocket = if (xposedRemotePref.getBoolean("vendor_id_hook", false) && !isNonPreemptiveAudioRequested()) {
+                        val attSocket = if (xposedRemotePref.getBoolean("vendor_id_hook", false) && !isNonPreemptiveAudioRequested() && !phoneGuardEnabled()) {
                             var candidate: BluetoothSocket? = null
                             try {
                                 candidate = createBluetoothSocket(adapter, device,
@@ -3092,16 +3318,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                 null
                             }
                         } else null
-                        if (!controlSessions.runIfCurrent(sessionId) {
-                            BluetoothConnectionManager.attSocket = attSocket
-                            if (attSocket != null) {
-                                attManager.startReader()
-                                attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
-                                attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
-                                attManager.readCharacteristic(ATTHandles.HEARING_AID)
-                            }
-                        }) {
+                        if (phoneGuardEnabled()) {
                             runCatching { attSocket?.close() }
+                            phoneGuardTrace.record("auxiliary", "skipped during protection")
+                            return@auxiliary
+                        }
+                        if (!controlSessions.runIfCurrent(sessionId) { BluetoothConnectionManager.attSocket = attSocket }) {
+                            runCatching { attSocket?.close() }
+                            return@auxiliary
+                        }
+                        // Characteristic reads can wait seconds; never hold the session
+                        // monitor while doing them, since the main thread also reads it.
+                        if (attSocket != null && currentSession()) {
+                            attManager.startReader()
+                            for (handle in listOf(ATTHandles.LOUD_SOUND_REDUCTION, ATTHandles.TRANSPARENCY, ATTHandles.HEARING_AID)) {
+                                if (!currentSession() || phoneGuardEnabled() || BluetoothConnectionManager.attSocket !== attSocket) break
+                                attManager.readCharacteristic(handle)
+                            }
                         }
 
                     }
@@ -3371,7 +3604,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         bluetoothAdapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
                 // The owner may change while waiting for this asynchronous proxy.
-                if (!priorityAllowsLocalAudio()) {
+                if (!phoneGuardEnabled() && !priorityAllowsLocalAudio()) {
                     bluetoothAdapter.closeProfileProxy(profile, proxy)
                     updatePriorityRoute()
                     return
@@ -3379,6 +3612,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (profile == BluetoothProfile.A2DP) {
                     if (context.checkSelfPermission("android.permission.BLUETOOTH_PRIVILEGED") == PackageManager.PERMISSION_GRANTED) {
                         try {
+                            if (phoneGuardEnabled() && proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
+                                updatePhoneGuard()
+                                return
+                            }
                             val policyMethod = proxy.javaClass.getMethod(
                                 "setConnectionPolicy",
                                 BluetoothDevice::class.java,
@@ -3418,7 +3655,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         bluetoothAdapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
                 // The owner may change while waiting for this asynchronous proxy.
-                if (!priorityAllowsLocalAudio()) {
+                if (!phoneGuardEnabled() && !priorityAllowsLocalAudio()) {
                     bluetoothAdapter.closeProfileProxy(profile, proxy)
                     updatePriorityRoute()
                     return
@@ -3469,6 +3706,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        phoneGuardServiceDestroyed = true
         controlSessions.invalidate()
         runCatching { BluetoothConnectionManager.aacpSocket?.close() }
         runCatching { BluetoothConnectionManager.attSocket?.close() }
@@ -3478,6 +3716,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         priorityAuditHandler.removeCallbacks(silenceCheck)
         getSystemService(AudioManager::class.java).unregisterAudioDeviceCallback(mediaRouteCallback)
         prioritySilencer.restore()
+        phoneTransport.close()
+        if (phoneGuardWakeLock.isHeld) phoneGuardWakeLock.release()
         ServiceManager.setService(null)
         priorityRouteGate.restore()
         playbackPriority.reset()

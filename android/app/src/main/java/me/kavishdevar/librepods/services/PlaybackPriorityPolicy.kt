@@ -10,22 +10,30 @@ internal class PlaybackPriorityPolicy {
     private var localActive = false
     private var idleStateKnown = false
     private val remoteActive = mutableSetOf<String>()
+    private val explicitRemoteStreaming = mutableSetOf<String>()
 
     @Synchronized fun reset() {
         owner = Owner.UNKNOWN
         localActive = false
         idleStateKnown = false
         remoteActive.clear()
+        explicitRemoteStreaming.clear()
     }
 
-    @Synchronized fun seedLocalPlayback() {
-        if (owner != Owner.UNKNOWN) return
-        owner = Owner.LOCAL
-        idleStateKnown = true
-        localActive = true
+    /** A cached NONE/local source is not proof that the currently playing remote host is idle.
+     * Local ownership is admitted only by a playback start after a confirmed idle state.
+     */
+    @Synchronized fun observeSource(address: String, local: Boolean, idle: Boolean, fresh: Boolean) {
+        if (idle) {
+            if (fresh) confirmIdle()
+        } else if (!local) {
+            remotePlayback(address, true)
+        }
     }
 
     @Synchronized fun confirmIdle() {
+        // A source-NONE transition cannot contradict an explicit hostStreamingState=YES.
+        if (explicitRemoteStreaming.isNotEmpty()) return
         remoteActive.clear()
         idleStateKnown = true
         releaseIfIdle()
@@ -56,6 +64,12 @@ internal class PlaybackPriorityPolicy {
         owner = Owner.REMOTE
         idleStateKnown = true
         return true
+    }
+
+    @Synchronized fun remoteStreaming(address: String, active: Boolean): Boolean {
+        val key = address.uppercase()
+        if (active) explicitRemoteStreaming.add(key) else explicitRemoteStreaming.remove(key)
+        return remotePlayback(address, active)
     }
 
     @Synchronized fun allowsLocal(): Boolean {

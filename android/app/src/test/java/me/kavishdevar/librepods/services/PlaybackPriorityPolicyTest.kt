@@ -97,13 +97,41 @@ class PlaybackPriorityPolicyTest {
     @Test fun localSourcePacketCannotOverwriteProtectedMac() {
         val p = idle()
         p.remotePlayback("MAC", true)
-        p.seedLocalPlayback()
+        p.observeSource("PHONE", local = true, idle = false, fresh = true)
         assertFalse(p.allowsLocal())
     }
-    @Test fun enablingWhilePhoneIsAlreadyPlayingKeepsPhoneOwner() {
+    @Test fun cachedPhoneSourceCannotAdmitBackgroundPhonePlayback() {
         val p = PlaybackPriorityPolicy()
-        p.seedLocalPlayback()
-        assertFalse(p.remotePlayback("MAC", true))
+        p.observeSource("PHONE", local = true, idle = false, fresh = false)
+        assertFalse(p.localPlayback(true))
+        assertFalse(p.protectsLocal())
+        assertTrue(p.remotePlayback("MAC", true))
+    }
+    @Test fun cachedNoneCannotAdmitPhoneBeforeCurrentMacStateArrives() {
+        val p = PlaybackPriorityPolicy()
+        p.observeSource("NONE", local = false, idle = true, fresh = false)
+        assertFalse(p.localPlayback(true))
+        assertTrue(p.remotePlayback("MAC", true))
+        assertEquals(PlaybackPriorityPolicy.Owner.REMOTE, p.snapshot())
+    }
+    @Test fun freshLocalSourceAloneDoesNotProveEarlierMacPlaybackStopped() {
+        val p = PlaybackPriorityPolicy()
+        p.observeSource("PHONE", local = true, idle = false, fresh = true)
+        assertFalse(p.protectsLocal())
+        assertFalse(p.localPlayback(true))
+    }
+    @Test fun freshNoneAdmitsANewLocalStartImmediately() {
+        val p = PlaybackPriorityPolicy()
+        p.observeSource("NONE", local = false, idle = true, fresh = true)
+        assertTrue(p.localPlayback(true))
+        assertTrue(p.protectsLocal())
+    }
+    @Test fun cachedRemotePlaybackFailsClosedUntilExplicitIdle() {
+        val p = PlaybackPriorityPolicy()
+        p.observeSource("MAC", local = false, idle = false, fresh = false)
+        assertFalse(p.allowsLocal())
+        p.observeSource("NONE", local = false, idle = true, fresh = true)
+        assertTrue(p.allowsLocal())
     }
     @Test fun resetDoesNotReusePreviousSessionOwnership() {
         val p = idle()
@@ -121,4 +149,19 @@ class PlaybackPriorityPolicyTest {
         p.remotePlayback("OTHER", false)
         assertTrue(p.allowsLocal())
     }
+    @Test fun sourceNoneCannotReleaseAnExplicitlyStreamingMac() {
+        val p = idle()
+        p.remoteStreaming("MAC", true)
+        p.observeSource("NONE", local = false, idle = true, fresh = true)
+        assertFalse(p.allowsLocal())
+        assertFalse(p.localPlayback(true))
+    }
+    @Test fun explicitMacStopImmediatelyReleasesAfterTransientNone() {
+        val p = idle()
+        p.remoteStreaming("MAC", true)
+        p.observeSource("NONE", local = false, idle = true, fresh = true)
+        p.remoteStreaming("MAC", false)
+        assertTrue(p.localPlayback(true))
+    }
+
 }

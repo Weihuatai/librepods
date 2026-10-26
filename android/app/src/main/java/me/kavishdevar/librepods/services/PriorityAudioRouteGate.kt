@@ -13,7 +13,7 @@ import java.lang.reflect.InvocationTargetException
 
 /** Audits actual profile policies and connection state, and restores only policies we changed. */
 internal class PriorityAudioRouteGate(private val context: Context) {
-    data class Status(val policy: Int? = null, val state: Int? = null, val error: String? = null)
+    data class Status(val policy: Int? = null, val state: Int? = null, val error: String? = null, val appliedAllowed: Boolean? = null)
     private val prefs = context.getSharedPreferences("playback_priority_route", Context.MODE_PRIVATE)
     private var generation = 0L
     private var sequence = 0L
@@ -73,7 +73,7 @@ internal class PriorityAudioRouteGate(private val context: Context) {
                             } else {
                                 AudioProfileRouteController.Observation(access.connectionPolicy(), access.connectionState())
                             }
-                            val next = Status(observed.policy, observed.connectionState)
+                            val next = Status(observed.policy, observed.connectionState, appliedAllowed = allowed)
                             if (statuses[profile] != next) {
                                 Log.i("PlaybackPriority", "Verified profile=$profile allowed=$allowed policy=${observed.policy} state=${observed.connectionState}")
                             }

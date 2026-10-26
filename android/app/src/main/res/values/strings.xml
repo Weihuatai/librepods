@@ -324,4 +324,6 @@
     <string name="priority_root_check_running">Checking system mount…</string>
     <string name="priority_root_check_timeout">Root check timed out. Check whether root access was allowed, then retry.</string>
     <string name="priority_mode_unavailable">Playback protection requested but inactive: privileged Bluetooth permission missing. Normal controls remain enabled.</string>
+    <string name="priority_action_inactive">Requested action: inactive</string>
+    <string name="priority_route_updating">Updating request; previous verified state</string>
 </resources>

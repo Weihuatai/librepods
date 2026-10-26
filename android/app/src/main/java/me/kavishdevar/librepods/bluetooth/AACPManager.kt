@@ -190,7 +190,7 @@ class AACPManager {
     var connectedDevices: List<ConnectedDevice> = listOf()
         private set
 
-    var audioSource: AudioSource? = null
+    @Volatile var audioSource: AudioSource? = null
         private set
 
     var eqData = FloatArray(8)
@@ -509,10 +509,10 @@ class AACPManager {
                 try {
                     val (mac, type) = parseAudioSourceResponse(packet)
                     audioSource = AudioSource(mac, type)
+                    callback?.onAudioSourceReceived(packet)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing audio source response: ${e.message}")
                 }
-                callback?.onAudioSourceReceived(packet)
             }
 
             Opcodes.CONNECTED_DEVICES -> {
@@ -1214,18 +1214,8 @@ class AACPManager {
 
     fun parseAudioSourceResponse(data: ByteArray): Pair<String, AudioSourceType> {
         Log.d(TAG, "Parsing Audio Source Response: ${data.joinToString(" ") { "%02X".format(it) }}")
-        if (data.size < 9) {
-            throw IllegalArgumentException("Data array too short to parse Audio Source Response")
-        }
-        if (data[4] != Opcodes.AUDIO_SOURCE) {
-            throw IllegalArgumentException("Data array does not start with AUDIO_SOURCE opcode")
-        }
-        val macBytes = data.sliceArray(6..11).reversedArray()
-        val mac = macBytes.joinToString(":") { "%02X".format(it) }
-        val typeByte = data[12]
-        val type = AudioSourceType.fromByte(typeByte)
-            ?: throw IllegalArgumentException("Unknown Audio Source Type: $typeByte")
-        return Pair(mac, type)
+        val parsed = AudioSourcePacketParser.parse(data)
+        return Pair(parsed.mac, AudioSourceType.fromByte(parsed.type)!!)
     }
 
     fun parseConnectedDevicesResponse(data: ByteArray): List<ConnectedDevice> {

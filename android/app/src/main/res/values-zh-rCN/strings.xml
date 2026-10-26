@@ -313,4 +313,6 @@
     <string name="priority_root_check_running">正在检查系统挂载…</string>
     <string name="priority_root_check_timeout">检查超时，请确认已允许 root 授权后重试。</string>
     <string name="priority_mode_unavailable">防抢占未运行：缺少系统蓝牙权限；保留普通连接与耳机控制。</string>
+    <string name="priority_action_inactive">当前请求：未执行（实验保护未运行）</string>
+    <string name="priority_route_updating">正在更新请求；上次核实状态</string>
 </resources>

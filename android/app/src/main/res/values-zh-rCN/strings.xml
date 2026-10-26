@@ -280,7 +280,9 @@
     <string name="i_agree">我同意</string>
     <string name="non_preemptive_audio">不抢占播放（实验）</string>
     <string name="non_preemptive_audio_description">先播放的设备保留耳机。另一台播放期间，手机媒体继续走进度但保持静音；确认另一台停播后可自动切换，耳机输出就绪后恢复声音。需配套系统模块。临时静音作用于手机媒体音频。</string>
-    <string name="priority_status_title">连接恢复状态</string>
+    <string name="phone_no_preempt">手机不打断其他设备（实验）</string>
+    <string name="phone_no_preempt_description">另一台设备播放时，保留手机媒体连接并挂起手机蓝牙音频。需要 Root，当前系统的兼容性仍需测试；不阻止 Mac 接管手机。电话通话不属于本次媒体实验。</string>
+    <string name="priority_status_title">手机音频保护与恢复状态</string>
     <string name="priority_copy_status">复制状态</string>
     <string name="priority_granted">已授权</string>
     <string name="priority_missing">未授权</string>
@@ -304,7 +306,7 @@
     <string name="priority_transition">正在连接或断开</string>
     <string name="priority_forbidden">策略已禁止</string>
     <string name="priority_permitted">策略允许连接</string>
-    <string name="priority_status_hint">不抢占实验已撤下，本版会恢复此前保存的媒体静音和蓝牙连接策略。如正常声音没有恢复，可复制此状态用于定位。</string>
+    <string name="priority_status_hint">新开关只测试手机单向保护并保留媒体连接。系统报告已挂起，不等于耳机实测已通过。如仍切换或无法恢复，可复制状态；旧版断开连接和静音实验保持关闭。</string>
     <string name="priority_mode_on">防抢占实验开关：开启</string>
     <string name="priority_mode_off">防抢占实验开关：关闭（未执行通道保护）</string>
     <string name="priority_control_verified">耳机控制连接：已收到本次连接的耳机数据</string>

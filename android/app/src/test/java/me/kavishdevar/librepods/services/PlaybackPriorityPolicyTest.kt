@@ -63,21 +63,22 @@ class PlaybackPriorityPolicyTest {
         p.localPlayback(false)
         assertFalse(p.allowsLocal())
     }
-    @Test fun rejectedMacMustStopBeforeBothDevicesCanBecomeIdle() {
+    @Test fun waitingMacCanProceedWhenPhoneOwnerStops() {
         val p = idle()
         p.localPlayback(true)
         assertFalse(p.remotePlayback("MAC", true))
         p.localPlayback(false)
-        assertEquals(PlaybackPriorityPolicy.Owner.LOCAL, p.snapshot())
+        assertEquals(PlaybackPriorityPolicy.Owner.REMOTE, p.snapshot())
         p.remotePlayback("MAC", false)
         assertEquals(PlaybackPriorityPolicy.Owner.IDLE, p.snapshot())
     }
-    @Test fun rejectedPhoneMustAlsoStopBeforeMacPauseReleasesTheRoute() {
+    @Test fun waitingPhoneIsAdmittedImmediatelyWhenMacStops() {
         val p = idle()
         p.remotePlayback("MAC", true)
         assertFalse(p.localPlayback(true))
         p.remotePlayback("MAC", false)
-        assertFalse(p.allowsLocal())
+        assertTrue(p.allowsLocal())
+        assertTrue(p.protectsLocal())
         p.localPlayback(false)
         assertTrue(p.allowsLocal())
     }
@@ -162,6 +163,23 @@ class PlaybackPriorityPolicyTest {
         p.observeSource("NONE", local = false, idle = true, fresh = true)
         p.remoteStreaming("MAC", false)
         assertTrue(p.localPlayback(true))
+    }
+
+    @Test fun continuousWaitingPhonePlaybackCanBecomeOwnerWithoutRestarting() {
+        val p=idle();p.remoteStreaming("MAC",true)
+        repeat(5){ assertFalse(p.localPlayback(true)) }
+        p.remoteStreaming("MAC",false)
+        assertTrue(p.protectsLocal());assertTrue(p.allowsLocal())
+    }
+    @Test fun stoppingWaitingPhoneBeforeMacPauseDoesNotAutoplayIt() {
+        val p=idle();p.remoteStreaming("MAC",true);p.localPlayback(true);p.localPlayback(false)
+        p.remoteStreaming("MAC",false)
+        assertEquals(PlaybackPriorityPolicy.Owner.IDLE,p.snapshot())
+    }
+    @Test fun queuedPhoneStillWaitsForAllRemoteHostsToStop() {
+        val p=idle();p.remoteStreaming("MAC",true);p.remoteStreaming("OTHER",true);p.localPlayback(true)
+        p.remoteStreaming("MAC",false);assertFalse(p.allowsLocal())
+        p.remoteStreaming("OTHER",false);assertTrue(p.protectsLocal())
     }
 
 }

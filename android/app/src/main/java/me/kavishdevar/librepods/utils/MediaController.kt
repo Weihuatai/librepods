@@ -265,6 +265,7 @@ object MediaController {
 
     @Synchronized
     fun sendPause(force: Boolean = false) {
+        if (ServiceManager.getService()?.keepMediaPlayingSilently() == true) return
         Log.d("MediaController", "Sending pause with iPausedTheMedia: $iPausedTheMedia, userPlayedTheMedia: $userPlayedTheMedia, isMusicActive: ${audioManager.isMusicActive}, force: $force")
         if ((audioManager.isMusicActive) && (!userPlayedTheMedia || force)) {
             iPausedTheMedia = if (force) audioManager.isMusicActive else true
@@ -325,6 +326,7 @@ object MediaController {
 
     @Synchronized
     fun startSpeaking() {
+        if (ServiceManager.getService()?.keepMediaPlayingSilently() == true) return
         Log.d("MediaController", "Starting speaking max vol: ${audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, current vol: ${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}, conversationAwarenessVolume: $conversationAwarenessVolume, relativeVolume: $relativeVolume")
 
         if (initialVolume == null) {
@@ -365,6 +367,7 @@ object MediaController {
 
         handler.post(object : Runnable {
             override fun run() {
+                if (ServiceManager.getService()?.keepMediaPlayingSilently() == true) return
                 if (currentVolume != toVolume) {
                     currentVolume += step
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVolume, 0)

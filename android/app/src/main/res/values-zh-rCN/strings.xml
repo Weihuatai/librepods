@@ -279,7 +279,7 @@
     <string name="privacy_policy">隐私政策</string>
     <string name="i_agree">我同意</string>
     <string name="non_preemptive_audio">不抢占播放（实验）</string>
-    <string name="non_preemptive_audio_description">先播放的设备保持音频；确认两台设备均已停播后即可切换，不额外等待。开启后覆盖下方自动连接偏好。需安装配套 root 模块以同时阻止安卓媒体路由。另一台正在播放时，手动切换也会被阻止。耳机固件的实际行为仍需测试。</string>
+    <string name="non_preemptive_audio_description">先播放的设备保留耳机。另一台播放期间，手机媒体继续走进度但保持静音；确认另一台停播后可自动切换，耳机输出就绪后恢复声音。需配套系统模块。临时静音作用于手机媒体音频。</string>
     <string name="priority_status_title">防抢占运行状态</string>
     <string name="priority_copy_status">复制状态</string>
     <string name="priority_granted">已授权</string>
@@ -315,4 +315,10 @@
     <string name="priority_mode_unavailable">防抢占未运行：缺少系统蓝牙权限；保留普通连接与耳机控制。</string>
     <string name="priority_action_inactive">当前请求：未执行（实验保护未运行）</string>
     <string name="priority_route_updating">正在更新请求；上次核实状态</string>
+    <string name="priority_silence_status">手机媒体：%1$s</string>
+    <string name="priority_silence_normal">已恢复原静音状态</string>
+    <string name="priority_silence_held">临时静音，播放进度继续</string>
+    <string name="priority_silence_detach">等待手机耳机媒体通道断开</string>
+    <string name="priority_silence_route">保持静音，等待声音路由到 AirPods</string>
+    <string name="priority_silence_unknown">尚未确认媒体输出路由</string>
 </resources>

@@ -46,6 +46,8 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Color
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
@@ -163,11 +165,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val playbackPriority = PlaybackPriorityPolicy()
     private var priorityWasEnabled = false
     private var priorityCallActive = false
-    private var priorityPlaybackActive = false
+    @Volatile private var priorityPlaybackActive = false
     private var priorityReleasedWithoutSession = false
     private val controlSessions = ControlSessionEpoch()
     private val controlConnecting = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val priorityRouteGate by lazy { PriorityAudioRouteGate(this) }
+    private val priorityRouteGate by lazy { PriorityAudioRouteGate(this) { updatePrioritySilence() } }
+    private val prioritySilencer by lazy { PriorityMediaSilencer(this) }
+    private var priorityResumeRequested = false
+    private var silenceCheckQueued = false
+    private var silenceWaitingSince = 0L
+    private val silenceCheck = Runnable {
+        silenceCheckQueued = false
+        updatePrioritySilence()
+    }
+    private val mediaRouteCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) { updatePrioritySilence() }
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) { updatePrioritySilence() }
+    }
     private val priorityAuditHandler = Handler(Looper.getMainLooper())
     private val priorityAudit = object : Runnable {
         override fun run() {
@@ -182,6 +196,52 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         priorityAuditHandler.removeCallbacks(priorityAudit)
         if (isNonPreemptiveAudioEnabled()) priorityAuditHandler.post(priorityAudit)
     }
+
+    private fun updatePrioritySilence() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            priorityAuditHandler.post { updatePrioritySilence() }
+            return
+        }
+        val enabled = isNonPreemptiveAudioEnabled()
+        val liveSession = confirmedControlConnection() && actualAclConnected() != false
+        val (age, _, docked) = connectionEvidence()
+        // A control-channel failure must not suddenly unmute a waiting phone on its speaker.
+        val retainSilence = prioritySilencer.owned() && !(ConnectionEvidence.fresh(age) && docked)
+        val session = liveSession || retainSilence
+        val a2dp = priorityRouteGate.snapshot()[BluetoothProfile.A2DP]
+        val ready = a2dp?.error == null && a2dp?.appliedAllowed == true &&
+            a2dp.policy == 100 && a2dp.state == BluetoothProfile.STATE_CONNECTED
+        val pending = prioritySilencer.update(enabled, session, playbackPriority.allowsLocal(),
+            macAddress, ready)
+        if (pending && !silenceCheckQueued) {
+            silenceCheckQueued = true
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (silenceWaitingSince == 0L) silenceWaitingSince = now
+            val retryMillis = if (now - silenceWaitingSince < 10_000L) 100L else 1_000L
+            priorityAuditHandler.postDelayed(silenceCheck, retryMillis)
+        } else if (!pending) {
+            priorityAuditHandler.removeCallbacks(silenceCheck)
+            silenceCheckQueued = false
+            silenceWaitingSince = 0L
+        }
+        if (enabled && liveSession && playbackPriority.allowsLocal() && priorityPlaybackActive &&
+            prioritySilencer.owned() && !priorityResumeRequested && localMac.isNotBlank()) {
+            // The old owner has explicitly stopped; keep local media muted until route confirmation.
+            val token = controlSessions.snapshot().generation
+            controlSessions.runIfCurrent(token) {
+                MediaController.pausedForOtherDevice = false
+                MediaController.pausedWhileTakingOver = false
+                MediaController.recentlyLostOwnership = false
+                priorityResumeRequested = aacpManager.sendControlCommand(
+                    AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1) &&
+                    aacpManager.sendMediaInformataion(localMac, true) &&
+                    aacpManager.sendHijackRequest(localMac)
+            }
+        }
+    }
+
+    fun keepMediaPlayingSilently(): Boolean =
+        isNonPreemptiveAudioEnabled() && (!playbackPriority.allowsLocal() || prioritySilencer.owned())
 
     private fun confirmedControlConnection(): Boolean {
         val session = controlSessions.snapshot()
@@ -247,10 +307,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 playbackPriority.allowsLocal() -> R.string.priority_want_allow
                 else -> R.string.priority_want_hold
             }),
+            playbackPriority.evidenceSummary(),
             "ACL=${actualAclConnected()}; source=${if (this::aacpManager.isInitialized) aacpManager.audioSource?.let { "${it.type}/${if (it.mac.equals(localMac, true)) "phone" else "other"}" } ?: "unknown" else "unknown"}",
             getString(controlStatus),
             route(BluetoothProfile.A2DP, getString(R.string.priority_media)),
-            route(BluetoothProfile.HEADSET, getString(R.string.priority_calls))
+            route(BluetoothProfile.HEADSET, getString(R.string.priority_calls)),
+            getString(R.string.priority_silence_status, when (prioritySilencer.action) {
+                SilentHandoffDecision.Action.RESTORE -> getString(R.string.priority_silence_normal)
+                SilentHandoffDecision.Action.HOLD -> getString(R.string.priority_silence_held)
+                SilentHandoffDecision.Action.WAIT_FOR_DETACH -> getString(R.string.priority_silence_detach)
+                SilentHandoffDecision.Action.WAIT_FOR_AIRPODS -> getString(R.string.priority_silence_route)
+                SilentHandoffDecision.Action.WAIT_FOR_ROUTE_INFO -> getString(R.string.priority_silence_unknown)
+            }),
+            "mediaMuted=${prioritySilencer.muted}; muteLease=${prioritySilencer.owned()}",
+            prioritySilencer.error.orEmpty()
         ).joinToString("\n")
     }
 
@@ -272,6 +342,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 aacpManager.sendNotificationRequest()
             } else if (!enabled) {
                 priorityRouteGate.restore()
+                priorityResumeRequested = false
+                updatePrioritySilence()
             }
         }
         return enabled
@@ -291,9 +363,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun updatePriorityRoute() {
         if (!isNonPreemptiveAudioEnabled()) return
+        updatePrioritySilence()
+        if (!playbackPriority.allowsLocal()) priorityResumeRequested = false
         if (!confirmedControlConnection() && playbackPriority.snapshot() == PlaybackPriorityPolicy.Owner.UNKNOWN) {
             // With no earbud session, phone speaker playback is outside this policy.
-            if (!priorityReleasedWithoutSession) priorityRouteGate.restore()
+            if (!priorityReleasedWithoutSession && !prioritySilencer.owned()) priorityRouteGate.restore()
             priorityReleasedWithoutSession = true
             return
         }
@@ -315,10 +389,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val allowed = playbackPriority.localPlayback(anyActive)
         if (!allowed) {
             Log.i("PlaybackPriority", "Blocked local audio; owner=" + playbackPriority.snapshot())
-            MediaController.sendPause(force = true)
+            // Continue playback without announcing a takeover; silence is managed separately.
         }
         updatePriorityRoute()
-        return allowed
+        return allowed && !prioritySilencer.owned()
     }
 
     fun priorityAllowsLocalAudio(): Boolean =
@@ -549,6 +623,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
         // Repair a route saved by an interrupted opt-out before the service stopped.
         if (!isNonPreemptiveAudioEnabled()) priorityRouteGate.restore()
+        if (!isNonPreemptiveAudioEnabled()) prioritySilencer.restore()
+        getSystemService(AudioManager::class.java).registerAudioDeviceCallback(mediaRouteCallback, priorityAuditHandler)
         initializeConfig()
 
         aacpManager = AACPManager()
@@ -885,6 +961,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
+                    updatePrioritySilence()
                 }
             }
         }
@@ -2617,6 +2694,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 Log.d(TAG, "Received bluetooth connection broadcast: action=$action")
                 val uuid = ParcelUuid.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
 
+                val service = ServiceManager.getService()
+                if (action == "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" &&
+                    bluetoothDevice.address.equals(service?.macAddress, true)) {
+                    service?.updatePriorityRoute()
+                }
                 if (BluetoothDevice.ACTION_ACL_CONNECTED == action) {
                     if (bluetoothDevice.uuids?.contains(uuid) == true) {
                         val intent = Intent(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)
@@ -3386,6 +3468,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         BluetoothConnectionManager.aacpSocket = null
         BluetoothConnectionManager.attSocket = null
         priorityAuditHandler.removeCallbacks(priorityAudit)
+        priorityAuditHandler.removeCallbacks(silenceCheck)
+        getSystemService(AudioManager::class.java).unregisterAudioDeviceCallback(mediaRouteCallback)
+        prioritySilencer.restore()
         ServiceManager.setService(null)
         priorityRouteGate.restore()
         playbackPriority.reset()

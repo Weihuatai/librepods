@@ -1,6 +1,6 @@
 package me.kavishdevar.librepods.services
 
-/** First admitted playback retains ownership until all observed audio is idle.
+/** First admitted playback retains ownership until that owner stops.
  * A rejected playback attempt never becomes evidence that the owner has stopped.
  * Unknown remote state fails closed, rather than assuming the other host is idle.
  */
@@ -81,10 +81,15 @@ internal class PlaybackPriorityPolicy {
     }
 
     @Synchronized fun snapshot(): Owner = owner
+    @Synchronized fun evidenceSummary(): String =
+        "localPlaying=$localActive; remoteBusy=${remoteActive.size}; remoteStreaming=${explicitRemoteStreaming.size}"
 
     private fun releaseIfIdle() {
-        if (idleStateKnown && !localActive && remoteActive.isEmpty()) {
-            owner = Owner.IDLE
+        if (!idleStateKnown) return
+        when (owner) {
+            Owner.REMOTE -> if (remoteActive.isEmpty()) owner = if (localActive) Owner.LOCAL else Owner.IDLE
+            Owner.LOCAL -> if (!localActive) owner = if (remoteActive.isEmpty()) Owner.IDLE else Owner.REMOTE
+            Owner.UNKNOWN, Owner.IDLE -> if (remoteActive.isEmpty()) owner = if (localActive) Owner.LOCAL else Owner.IDLE
         }
     }
 }

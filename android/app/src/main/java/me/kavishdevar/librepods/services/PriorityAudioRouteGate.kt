@@ -12,7 +12,7 @@ import androidx.core.content.edit
 import java.lang.reflect.InvocationTargetException
 
 /** Audits actual profile policies and connection state, and restores only policies we changed. */
-internal class PriorityAudioRouteGate(private val context: Context) {
+internal class PriorityAudioRouteGate(private val context: Context, private val onVerified: () -> Unit = {}) {
     data class Status(val policy: Int? = null, val state: Int? = null, val error: String? = null, val appliedAllowed: Boolean? = null)
     private val prefs = context.getSharedPreferences("playback_priority_route", Context.MODE_PRIVATE)
     private var generation = 0L
@@ -78,6 +78,7 @@ internal class PriorityAudioRouteGate(private val context: Context) {
                                 Log.i("PlaybackPriority", "Verified profile=$profile allowed=$allowed policy=${observed.policy} state=${observed.connectionState}")
                             }
                             statuses[profile] = next
+                            context.mainExecutor.execute(onVerified)
                         }
                     } catch (error: Exception) {
                         val cause = (error as? InvocationTargetException)?.targetException ?: error

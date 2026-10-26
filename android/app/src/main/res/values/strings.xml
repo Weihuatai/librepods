@@ -290,7 +290,7 @@
     <string name="eq_mid">Mid</string>
     <string name="eq_high">High</string>
     <string name="non_preemptive_audio">Do not interrupt playback (experimental)</string>
-    <string name="non_preemptive_audio_description">The first playing device keeps the audio. Switch as soon as both devices are confirmed idle, without an extra delay. Overrides the automatic connection preferences below. Install the companion root module to also block Android media routing. Explicit manual switching is blocked while the other device is playing. Test with your earbud firmware.</string>
+    <string name="non_preemptive_audio_description">The playing device keeps the earbuds. While another device plays, phone media keeps advancing silently. Once that device stops, phone playback can switch automatically; sound returns only after the AirPods route is confirmed. Requires the companion system module. Temporary mute applies to phone media.</string>
     <string name="priority_status_title">Playback protection status</string>
     <string name="priority_copy_status">Copy status</string>
     <string name="priority_granted">Granted</string>
@@ -326,4 +326,10 @@
     <string name="priority_mode_unavailable">Playback protection requested but inactive: privileged Bluetooth permission missing. Normal controls remain enabled.</string>
     <string name="priority_action_inactive">Requested action: inactive</string>
     <string name="priority_route_updating">Updating request; previous verified state</string>
+    <string name="priority_silence_status">Phone media: %1$s</string>
+    <string name="priority_silence_normal">original mute state restored</string>
+    <string name="priority_silence_held">temporary silence; playback keeps advancing</string>
+    <string name="priority_silence_detach">waiting for phone Bluetooth media to detach</string>
+    <string name="priority_silence_route">keeping silence until media is routed to AirPods</string>
+    <string name="priority_silence_unknown">media output route could not be confirmed</string>
 </resources>
